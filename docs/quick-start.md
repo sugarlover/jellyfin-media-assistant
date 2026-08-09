@@ -63,7 +63,7 @@ Jellyfin Media Assistant searches the libraries available to a specific Jellyfin
 3. Look at the browser address bar for a value similar to:
 
 ```text
-userId=0123456789abcdef0123456789abcdef
+userId=<JELLYFIN_USER_ID>
 ```
 
 4. Copy only the value after `userId=`.

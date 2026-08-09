@@ -61,6 +61,7 @@ PLAYER_RESOLUTION_OPERATIONS: Final = (
 QUEUE_PLAYER_OPERATIONS: Final = frozenset(PLAYER_RESOLUTION_OPERATIONS[2:])
 
 SERVICE_SEARCH: Final = "search"
+SERVICE_REFRESH_CATALOG: Final = "refresh_catalog"
 SERVICE_PLAY_ON_CHROMECAST: Final = "play_on_chromecast"
 SERVICE_GET_ITEM: Final = "get_item"
 SERVICE_RESOLVE_MEDIA_PLAYER: Final = "resolve_media_player"

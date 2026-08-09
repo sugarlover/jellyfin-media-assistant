@@ -67,6 +67,7 @@ from .const import (
     SERVICE_PLAY_PENDING_MEDIA,
     SERVICE_RESUME_PENDING_MEDIA_REQUEST,
     SERVICE_REPAIR_VOICE_SENTENCES,
+    SERVICE_REFRESH_CATALOG,
     SERVICE_RESOLVE_MEDIA_PLAYER,
     SERVICE_RESUME_MEDIA_REQUEST,
     SERVICE_SEARCH_EPISODE,
@@ -95,7 +96,7 @@ from .orchestration import (
     async_play_pending_media,
     async_resume_pending_media_request,
 )
-from .search import SUPPORTED_CATALOG_MEDIA_TYPES
+from .search import CatalogRefreshError, SUPPORTED_CATALOG_MEDIA_TYPES
 from .voice_sentences import async_provision_voice_sentences
 
 _LOGGER = logging.getLogger(__name__)
@@ -264,6 +265,13 @@ RESUME_PENDING_MEDIA_REQUEST_SCHEMA = vol.Schema(
     {
         vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
         vol.Required(ATTR_MEDIA_PLAYER): cv.string,
+    }
+)
+
+
+REFRESH_CATALOG_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
     }
 )
 
@@ -1050,6 +1058,37 @@ async def async_handle_repair_voice_sentences(
     return result.as_dict()
 
 
+async def async_handle_refresh_catalog(
+    hass: HomeAssistant,
+    call: ServiceCall,
+) -> ServiceResponse:
+    """Refresh the configured Jellyfin catalog and return safe diagnostics."""
+
+    runtime = _resolve_runtime(hass, call)
+    try:
+        diagnostics = await runtime.catalog_manager.async_refresh()
+    except CatalogRefreshError as err:
+        raise _validation_error(
+            "catalog_refresh_failed",
+            "The Jellyfin catalog could not be refreshed; the previous catalog remains active.",
+        ) from err
+
+    return {
+        "success": True,
+        "status": "refreshed",
+        "source": str(diagnostics.source),
+        "catalog_created_at": diagnostics.catalog_created_at,
+        "cache_age_seconds": diagnostics.cache_age_seconds,
+        "page_count": diagnostics.page_count,
+        "snapshot_item_count": diagnostics.snapshot_item_count,
+        "indexed_record_count": diagnostics.indexed_record_count,
+        "logical_group_count": diagnostics.logical_group_count,
+        "duplicate_item_count": diagnostics.duplicate_item_count,
+        "refresh_duration_ms": diagnostics.last_refresh_duration_ms,
+        "cache_write_duration_ms": diagnostics.last_cache_write_duration_ms,
+    }
+
+
 async def async_handle_search(
     hass: HomeAssistant,
     call: ServiceCall,
@@ -1197,6 +1236,19 @@ async def async_register_services(hass: HomeAssistant) -> None:
             supports_response=SupportsResponse.ONLY,
         )
 
+    if not hass.services.has_service(DOMAIN, SERVICE_REFRESH_CATALOG):
+
+        async def handle_refresh_catalog(call: ServiceCall) -> ServiceResponse:
+            return await async_handle_refresh_catalog(hass, call)
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_REFRESH_CATALOG,
+            handle_refresh_catalog,
+            schema=REFRESH_CATALOG_SCHEMA,
+            supports_response=SupportsResponse.ONLY,
+        )
+
     if not hass.services.has_service(DOMAIN, SERVICE_RESOLVE_MEDIA_PLAYER):
 
         async def handle_resolve_media_player(call: ServiceCall) -> ServiceResponse:
@@ -1248,6 +1300,7 @@ __all__ = [
     "QUEUE_ADD_SCHEMA",
     "QUEUE_GET_SCHEMA",
     "QUEUE_SET_REPEAT_SCHEMA",
+    "REFRESH_CATALOG_SCHEMA",
     "REPAIR_VOICE_SENTENCES_SCHEMA",
     "RESOLVE_MEDIA_PLAYER_SCHEMA",
     "RESUME_MEDIA_REQUEST_SCHEMA",
@@ -1261,6 +1314,7 @@ __all__ = [
     "async_handle_media_orchestrator",
     "async_handle_play_pending_media",
     "async_handle_resume_pending_media_request",
+    "async_handle_refresh_catalog",
     "async_handle_repair_voice_sentences",
     "async_handle_play_on_chromecast",
     "async_handle_queue_add",

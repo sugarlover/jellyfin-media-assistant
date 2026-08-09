@@ -35,6 +35,7 @@ def test_custom_integration_uses_flat_english_translation_file() -> None:
     assert translations["config"]["step"]["user"]["data"]["api_key"] == "API key"
     assert "exceptions" in translations
     assert translations["services"]["search"]["fields"]["query"]["name"] == "Query"
+    assert translations["services"]["refresh_catalog"]["name"] == "Refresh Jellyfin catalog"
     assert translations["services"]["get_item"]["fields"]["item_id"]["name"] == "Item ID"
     assert translations["services"]["play_on_chromecast"]["fields"]["entity_id"]["name"] == "Media player"
     assert translations["options"]["step"]["init"]["data"]["default_media_player"] == "Default Media Player"
@@ -42,6 +43,14 @@ def test_custom_integration_uses_flat_english_translation_file() -> None:
     strings = json.loads((INTEGRATION / "strings.json").read_text(encoding="utf-8"))
     assert strings["options"] == translations["options"]
     assert translations["services"]["resolve_media_player"]["fields"]["media_player"]["name"] == "Media player"
+
+
+def test_services_yaml_describes_catalog_refresh_action() -> None:
+    services = yaml.safe_load((INTEGRATION / "services.yaml").read_text(encoding="utf-8"))
+
+    fields = services["refresh_catalog"]["fields"]
+    assert fields["config_entry_id"]["required"] is False
+    assert fields["config_entry_id"]["selector"]["config_entry"]["integration"] == "jellyfin_assist"
 
 
 def test_services_yaml_describes_response_only_search_inputs() -> None:

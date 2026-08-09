@@ -25,6 +25,13 @@ get_item:
       required: true
       selector:
         text: null
+refresh_catalog:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
 search:
   fields:
     config_entry_id:

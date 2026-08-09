@@ -45,6 +45,9 @@
     "catalog_unavailable": {
       "message": "The Jellyfin search catalog is not available yet."
     },
+    "catalog_refresh_failed": {
+      "message": "The Jellyfin catalog could not be refreshed. The previous working catalog remains active."
+    },
     "invalid_item_id": {
       "message": "Choose a Jellyfin item ID."
     },
@@ -97,6 +100,16 @@
         "item_id": {
           "name": "Item ID",
           "description": "The Jellyfin item ID to play. Series and Season items resolve through Jellyfin Next Up before playback."
+        }
+      }
+    },
+    "refresh_catalog": {
+      "name": "Refresh Jellyfin catalog",
+      "description": "Downloads the current Jellyfin library metadata for the configured user, rebuilds the local search index, and atomically replaces the saved catalog only after a complete refresh succeeds.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Configuration",
+          "description": "Optional when exactly one Jellyfin Media Assistant configuration is loaded; otherwise choose the configuration to refresh."
         }
       }
     },

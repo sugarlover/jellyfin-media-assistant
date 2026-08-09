@@ -140,6 +140,18 @@ Queues are persisted by the integration through Home Assistant storage and maint
 
 Starting a new **Play** request creates a fresh playback session and resets repeat modes. **Add/Queue** requests append media to the existing queue. Automatic advancement verifies that the completed Home Assistant media item corresponds to the current Jellyfin queue item before advancing.
 
+### Catalog behavior
+
+> **Catalog refresh time:** Refreshing the catalog may take several seconds to a minute or more depending on the size of your Jellyfin library and the performance of your server and Home Assistant system. During testing, a catalog containing about 3,800 items took approximately 37 seconds to refresh. The action may appear idle while the catalog is being downloaded and indexed; allow it to finish before running it again.
+
+Jellyfin Media Assistant maintains a local metadata catalog of the media available to the configured Jellyfin user. Searches are performed against this local index so that title normalization, speech-to-text correction, fuzzy matching, and other search improvements can be applied quickly.
+
+When the integration is started for the first time, the catalog is downloaded from Jellyfin. On later Home Assistant starts or integration reloads, the saved catalog is loaded immediately and refreshed from Jellyfin in the background.
+
+The last working catalog remains available if Jellyfin is temporarily unavailable or a refresh fails.
+
+If media has been added to or removed from Jellyfin since the last catalog refresh, use the `jellyfin_assist.refresh_catalog` action to update the search catalog without restarting Home Assistant.
+
 ## Diagnostics and troubleshooting
 
 Download diagnostics from **Settings → Devices & services → Jellyfin Media Assistant**. Diagnostics include catalog, player configuration, queue storage/advancement, pending-selection, and voice-sentence status while redacting the API key.

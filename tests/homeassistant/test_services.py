@@ -95,6 +95,104 @@ def test_registers_response_only_search_action_and_returns_data(tmp_path: Path) 
     assert response["items"][0]["name"] == "Bubba Ho-tep"
 
 
+def test_refresh_catalog_action_rebuilds_index_and_returns_diagnostics(tmp_path: Path) -> None:
+    calls = 0
+
+    def snapshot(title: str) -> CatalogSnapshot:
+        return CatalogSnapshot(
+            requested_types=("Movie",),
+            items=({"Id": "movie-1", "Name": title, "Type": "Movie"},),
+            pages=(),
+            raw_item_count=1,
+            duplicate_item_count=0,
+            missing_id_count=0,
+            server_overflow_item_count=0,
+            stop_reason=CatalogLoadStopReason.COMPLETE,
+        )
+
+    async def loader() -> CatalogSnapshot:
+        nonlocal calls
+        calls += 1
+        return snapshot("Old Title" if calls == 1 else "New Title")
+
+    manager = CatalogManager(
+        snapshot_loader=loader,
+        requested_types=["Movie"],
+        cache_identity="server:user",
+        cache_store=None,
+    )
+    run(manager.async_refresh())
+    entry = FakeEntry("entry-1", {})
+    entry.runtime_data = JellyfinAssistRuntime(
+        client=object(),  # type: ignore[arg-type]
+        catalog_manager=manager,
+        connection_info=None,
+    )
+    hass = FakeHass(tmp_path, entries=[entry])
+
+    run(async_register_services(hass))
+    registered = hass.services.registered[("jellyfin_assist", "refresh_catalog")]
+    response = run(registered["handler"](ServiceCall({"config_entry_id": "entry-1"})))
+
+    assert registered["supports_response"] is SupportsResponse.ONLY
+    assert calls == 2
+    assert response["success"] is True
+    assert response["status"] == "refreshed"
+    assert response["source"] == "refresh"
+    assert response["snapshot_item_count"] == 1
+    assert response["indexed_record_count"] == 1
+    assert response["catalog_created_at"] is not None
+    assert response["refresh_duration_ms"] is not None
+    assert manager.search("New Title").outcome.selected_record.item_id == "movie-1"
+
+
+def test_refresh_catalog_failure_keeps_previous_catalog(tmp_path: Path) -> None:
+    calls = 0
+
+    async def loader() -> CatalogSnapshot:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise ConnectionError("Jellyfin offline")
+        return CatalogSnapshot(
+            requested_types=("Movie",),
+            items=({"Id": "stable", "Name": "Stable Title", "Type": "Movie"},),
+            pages=(),
+            raw_item_count=1,
+            duplicate_item_count=0,
+            missing_id_count=0,
+            server_overflow_item_count=0,
+            stop_reason=CatalogLoadStopReason.COMPLETE,
+        )
+
+    manager = CatalogManager(
+        snapshot_loader=loader,
+        requested_types=["Movie"],
+        cache_identity="server:user",
+        cache_store=None,
+    )
+    run(manager.async_refresh())
+    entry = FakeEntry("entry-1", {})
+    entry.runtime_data = JellyfinAssistRuntime(
+        client=object(),  # type: ignore[arg-type]
+        catalog_manager=manager,
+        connection_info=None,
+    )
+    hass = FakeHass(tmp_path, entries=[entry])
+    run(async_register_services(hass))
+
+    with pytest.raises(ServiceValidationError):
+        run(
+            hass.services.registered[("jellyfin_assist", "refresh_catalog")]["handler"](
+                ServiceCall({"config_entry_id": "entry-1"})
+            )
+        )
+
+    assert calls == 2
+    assert manager.search("Stable Title").outcome.selected_record.item_id == "stable"
+    assert "Jellyfin offline" in (manager.diagnostics().last_error or "")
+
+
 def test_registration_is_idempotent(tmp_path: Path) -> None:
     hass = FakeHass(tmp_path)
 
@@ -115,6 +213,7 @@ def test_registration_is_idempotent(tmp_path: Path) -> None:
         ("jellyfin_assist", "queue_next"),
         ("jellyfin_assist", "queue_set_repeat"),
         ("jellyfin_assist", "queue_shuffle"),
+        ("jellyfin_assist", "refresh_catalog"),
         ("jellyfin_assist", "repair_voice_sentences"),
         ("jellyfin_assist", "resolve_media_player"),
         ("jellyfin_assist", "resume_media_request"),
