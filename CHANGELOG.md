@@ -4,12 +4,13 @@ All notable changes to Jellyfin Media Assistant will be documented here.
 
 The project uses semantic versioning for public releases.
 
-## [0.1.0-beta.1] - Unreleased
+## [0.1.0-beta.1] - 2026-08-09
 
 First public beta candidate.
 
 ### Added
 
+- Manual `jellyfin_assist.refresh_catalog` action for refreshing the Jellyfin search catalog without restarting Home Assistant.
 - Native Jellyfin catalog search with tolerant title matching.
 - Native Jellyfin item lookup and Chromecast playback.
 - Home Assistant Assist intents for movies, TV, music, ambiguous-result selection, and queue control.
