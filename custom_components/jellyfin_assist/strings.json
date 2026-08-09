@@ -4,7 +4,7 @@
     "step": {
       "user": {
         "title": "Connect to Jellyfin",
-        "description": "Connect the read-only search catalog to a Jellyfin server. Create an API key in Jellyfin and enter the user ID whose accessible libraries should be indexed.",
+        "description": "Connect Jellyfin Media Assistant to your Jellyfin server. The integration uses the selected Jellyfin user's library permissions to build a local searchable media catalog. After you submit this form, Jellyfin Media Assistant will scan your accessible Jellyfin libraries and build its search index. This may take several seconds to a minute or more depending on the size of your media library. Please keep this window open until setup completes.",
         "data": {
           "server_url": "Jellyfin server URL",
           "api_key": "API key",
@@ -535,14 +535,14 @@
   "options": {
     "step": {
       "init": {
-        "title": "Playback Targets and Queue Service",
-        "description": "Choose the default and additional playback targets used by Jellyfin Media Assistant.",
+        "title": "Media player targets",
+        "description": "Choose the media players Jellyfin Media Assistant can use for playback.",
         "data": {
           "default_media_player": "Default Media Player",
           "playback_targets": "Playback Targets"
         },
         "data_description": {
-          "default_media_player": "Used when a playback or queue request does not name a media player. The default is always included as an allowed playback target.",
+          "default_media_player": "Optional. When set, Jellyfin Media Assistant uses this player when a playback request does not name one. If no default is configured, playback requests must name a media player or Jellyfin Media Assistant will ask you to choose one. The default is always included as an allowed playback target.",
           "playback_targets": "Select additional supported playback targets. Configuring additional targets enables conservative typo matching and prevents unrelated media_player entities from being selected."
         }
       }
