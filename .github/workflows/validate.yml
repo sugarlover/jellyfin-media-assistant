@@ -1,4 +1,4 @@
-name: Validate with hassfest
+name: Validate with HACS
 
 on:
   push:
@@ -10,9 +10,11 @@ on:
 permissions: {}
 
 jobs:
-  validate:
+  validate-hacs:
     if: github.event.repository.private == false
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: home-assistant/actions/hassfest@master
+      - name: HACS validation
+        uses: hacs/action@main
+        with:
+          category: integration
