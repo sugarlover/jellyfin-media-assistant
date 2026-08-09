@@ -1,12 +1,9 @@
 """Native Chromecast playback orchestration for Jellyfin Media Assistant.
 
-The playback sequence intentionally preserves the installed JellyHA 1.2.0
-``play_on_chromecast`` contract while keeping the live production script on
-JellyHA until household parity testing is complete.
-
 Portions of the orchestration are adapted from JellyHA 1.2.0 ``services.py``
-(MIT License), Copyright (c) 2026 zupancicmarko. The frozen reference and
-license remain under ``reference/current-working/jellyha``.
+(MIT License), Copyright (c) 2026 zupancicmarko. JellyHA is not a runtime
+dependency; retained attribution and source provenance live under
+``THIRD_PARTY_NOTICES.md`` and ``docs/provenance/``.
 """
 
 from __future__ import annotations

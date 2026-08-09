@@ -1,9 +1,8 @@
 """Audit tracked files for public-release configuration and privacy risks.
 
-Step 41B removes knowledge of any specific household from this audit. The
-remaining checks are structural: private addresses, inline Jellyfin user IDs,
-non-example entities in the public Home Assistant reference, local storage
-paths, sensitive tracked files, and known temporary configuration debt.
+The checks are structural: private addresses, inline Jellyfin user IDs,
+non-example entities in the public Home Assistant compatibility fixture, local
+storage paths, sensitive tracked files, and known temporary configuration debt.
 """
 
 from __future__ import annotations
@@ -80,7 +79,6 @@ class AuditResult:
 
 
 _PUBLIC_HA_REFERENCE = "reference/current-working/home-assistant/"
-_UPSTREAM_JELLYHA_REFERENCE = "reference/current-working/jellyha/"
 _REFERENCE_TESTS = "tests/reference/"
 
 _PRIVATE_NETWORK_LITERAL = re.compile(
@@ -108,8 +106,7 @@ SURFACE_RULES: tuple[SurfaceRule, ...] = (
         name="private_network_literal",
         category="instance_specific",
         pattern=_PRIVATE_NETWORK_LITERAL,
-        baseline_max=16,
-        allowed_prefixes=(_UPSTREAM_JELLYHA_REFERENCE,),
+        baseline_max=0,
     ),
     SurfaceRule(
         name="inline_jellyfin_user_id",
@@ -160,7 +157,7 @@ SURFACE_RULES: tuple[SurfaceRule, ...] = (
         name="fixed_queue_service_port",
         category="configuration_debt",
         pattern=re.compile(r"(?<!\d)8787(?!\d)"),
-        baseline_max=10,
+        baseline_max=0,
         scan_paths=(
             "reference/current-working/home-assistant/configuration.yaml",
             "reference/current-working/queue-service/docker-compose.yml",

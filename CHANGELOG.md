@@ -17,12 +17,14 @@ First public beta candidate.
 - Config-entry UI for Jellyfin connection details and playback targets.
 - Automatic provisioning and repair of managed English Assist sentence definitions.
 - Diagnostics for connection, catalog, player configuration, queue advancement, pending selection, and voice onboarding.
+- User quick-start, voice-command, configuration, architecture, developer, and known-limitations documentation.
 
 ### Changed
 
 - Jellyfin Media Assistant no longer depends on JellyHA at runtime.
 - Queue persistence now lives in Home Assistant storage; no external queue server, Python process, Docker container, or port 8787 is required.
 - Home Assistant YAML scripts, helpers, REST commands, `intent_script`, and queue-advancement automations are no longer required.
+- Historical migration-step documents and the full vendored JellyHA source snapshot were removed from the public repository; durable provenance and the upstream MIT license are retained.
 
 ### Support status
 

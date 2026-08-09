@@ -1,12 +1,7 @@
-# Frozen-reference contract tests
+# Sanitized compatibility-fixture tests
 
-These tests characterize the stable pre-upgrade implementation stored under
-`reference/current-working`.
+These tests inspect the small sanitized fixtures under `reference/current-working/` that still protect compatibility boundaries from the earlier Home Assistant YAML implementation.
 
-They intentionally inspect the frozen source rather than importing the full
-Home Assistant integration. This keeps the first test layer independent of a
-Home Assistant installation, Jellyfin server, network connection, and secrets.
+They are not installation examples and they are not a second implementation of Jellyfin Media Assistant. New behavior should be tested against the native integration under `tests/homeassistant/`, `tests/search/`, or `tests/matching/` whenever possible.
 
-The tests are not an endorsement of the current search behavior. They document
-the boundary that the new robust-search implementation must preserve or change
-only through an explicit, reviewed contract decision.
+The historical JellyHA source-contract fixtures were removed when the public documentation/repository surface was cleaned up because JellyHA is no longer a runtime dependency. JellyHA provenance is retained under `docs/provenance/`.

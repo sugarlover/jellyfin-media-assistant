@@ -47,6 +47,7 @@ def test_release_repository_has_single_custom_integration() -> None:
 def test_root_release_docs_and_license_exist() -> None:
     expected = {
         "README.md",
+        "CONTRIBUTING.md",
         "LICENSE",
         "THIRD_PARTY_NOTICES.md",
         "CHANGELOG.md",
@@ -54,6 +55,22 @@ def test_root_release_docs_and_license_exist() -> None:
         "hacs.json",
     }
     assert all((ROOT / name).is_file() for name in expected)
+
+
+def test_public_documentation_surface_is_current_and_durable() -> None:
+    expected = {
+        "README.md",
+        "quick-start.md",
+        "voice-commands.md",
+        "configuration.md",
+        "architecture.md",
+        "developer-guide.md",
+        "known-limitations.md",
+    }
+    assert all((ROOT / "docs" / name).is_file() for name in expected)
+    assert not list((ROOT / "docs").glob("step-*.md"))
+    assert not (ROOT / "reference" / "current-working" / "jellyha").exists()
+    assert (ROOT / "docs" / "provenance" / "JELLYHA_LICENSE.txt").is_file()
 
 
 def test_repository_packaging_audit_passes() -> None:

@@ -1,14 +1,9 @@
-"""Chromecast playback strategy compatible with the stable JellyHA path.
+"""Chromecast playback strategy adapted from the proven JellyHA behavior.
 
 Portions of the media-analysis and playback URL selection logic are adapted
-from JellyHA 1.2.0 ``media_strategy.py`` (MIT License).
-
-Copyright (c) 2026 zupancicmarko
-
-The upstream reference snapshot and full MIT license are retained under
-``reference/current-working/jellyha``.  This module intentionally preserves
-that known-working behavior while Jellyfin Media Assistant migrates playback
-behind a live-tested rollback boundary.
+from JellyHA 1.2.0 ``media_strategy.py`` (MIT License), Copyright (c) 2026
+zupancicmarko. JellyHA is not a runtime dependency; retained attribution and
+provenance live in ``THIRD_PARTY_NOTICES.md`` and ``docs/provenance/``.
 """
 
 from __future__ import annotations

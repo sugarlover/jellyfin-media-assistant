@@ -1,37 +1,22 @@
 #!/usr/bin/env python3
-"""Audit the remaining upstream JellyHA runtime dependency surface."""
+"""Audit that JellyHA remains provenance-only and absent from runtime dependencies."""
 
 from __future__ import annotations
 
-from collections import Counter
 import json
 from pathlib import Path
-import re
 import sys
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "docs" / "provenance" / "jellyha.json"
-CANONICAL_SCRIPTS = (
-    ROOT / "reference" / "current-working" / "home-assistant" / "scripts.yaml"
-)
 PUBLIC_MANIFEST = ROOT / "custom_components" / "jellyfin_assist" / "manifest.json"
 JELLYFIN_ASSIST_RUNTIME = ROOT / "custom_components" / "jellyfin_assist"
 JELLYFIN_ASSIST_CONST = JELLYFIN_ASSIST_RUNTIME / "const.py"
 JELLYFIN_ASSIST_SERVICES = JELLYFIN_ASSIST_RUNTIME / "services.py"
-VENDORED_LICENSE = ROOT / "reference" / "current-working" / "jellyha" / "LICENSE"
+RETAINED_LICENSE = ROOT / "docs" / "provenance" / "JELLYHA_LICENSE.txt"
 THIRD_PARTY_NOTICE = ROOT / "THIRD_PARTY_NOTICES.md"
-
-ACTION_PATTERN = re.compile(
-    r"^\s*(?:-\s*)?(?:action|service):\s*jellyha\.([a-z0-9_]+)\s*$",
-    re.MULTILINE,
-)
-NATIVE_PLAYBACK_PATTERN = re.compile(
-    r"^\s*(?:-\s*)?(?:action|service):\s*jellyfin_assist\.play_on_chromecast\s*$",
-    re.MULTILINE,
-)
-EXPECTED_ACTION_COUNTS = Counter()
-EXPECTED_NATIVE_PLAYBACK_ACTION_COUNT = 0
+HISTORICAL_SOURCE_SNAPSHOT = ROOT / "reference" / "current-working" / "jellyha"
 EXPECTED_TRACKED_SERVICES = {
     "jellyha.get_item",
     "jellyha.search",
@@ -44,7 +29,7 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def audit() -> list[str]:
-    """Return human-readable errors; empty means the dependency inventory is current."""
+    """Return human-readable errors; empty means provenance/runtime boundaries hold."""
 
     errors: list[str] = []
 
@@ -60,22 +45,9 @@ def audit() -> list[str]:
     }
     if inventory_services != EXPECTED_TRACKED_SERVICES:
         errors.append(
-            "Provenance inventory services differ from the approved dependency set: "
+            "Provenance inventory services differ from the approved retired set: "
             f"{sorted(inventory_services)}"
         )
-
-    if CANONICAL_SCRIPTS.exists():
-        errors.append(
-            "Project-owned Home Assistant scripts unexpectedly reappeared after native orchestration migration"
-        )
-    action_counts = Counter()
-    media_actions_text = (JELLYFIN_ASSIST_RUNTIME / "media_actions.py").read_text(encoding="utf-8")
-    if "async_play_on_chromecast(" not in media_actions_text:
-        errors.append("Native high-level playback no longer routes through async_play_on_chromecast")
-
-    unexpected = {f"jellyha.{name}" for name in action_counts} - EXPECTED_TRACKED_SERVICES
-    if unexpected:
-        errors.append(f"Unexpected upstream JellyHA actions: {sorted(unexpected)}")
 
     manifest = _load_json(PUBLIC_MANIFEST)
     dependencies = set(manifest.get("dependencies") or [])
@@ -91,6 +63,12 @@ def audit() -> list[str]:
         errors.append("Native get_item action marker was not found")
     if "async_handle_get_item" not in services_text:
         errors.append("Native get_item action was not found")
+
+    media_actions_text = (JELLYFIN_ASSIST_RUNTIME / "media_actions.py").read_text(
+        encoding="utf-8"
+    )
+    if "async_play_on_chromecast(" not in media_actions_text:
+        errors.append("Native high-level playback no longer routes through async_play_on_chromecast")
 
     runtime_files = [
         path
@@ -122,13 +100,22 @@ def audit() -> list[str]:
             errors.append(
                 f"Tracked capability still records a runtime caller: {item.get('service')}"
             )
+        if item.get("migration_status") != "runtime_retired":
+            errors.append(
+                f"Tracked capability has an unexpected migration status: {item.get('service')}"
+            )
 
-    if not VENDORED_LICENSE.exists():
-        errors.append("Vendored JellyHA reference is missing its MIT license")
+    if HISTORICAL_SOURCE_SNAPSHOT.exists():
+        errors.append(
+            "Historical JellyHA source snapshot should not be distributed in the public repository"
+        )
+
+    if not RETAINED_LICENSE.exists():
+        errors.append("Retained JellyHA MIT license is missing")
     else:
-        license_text = VENDORED_LICENSE.read_text(encoding="utf-8")
+        license_text = RETAINED_LICENSE.read_text(encoding="utf-8")
         if "MIT License" not in license_text or "Copyright (c) 2026 zupancicmarko" not in license_text:
-            errors.append("Vendored JellyHA license does not contain the recorded upstream notice")
+            errors.append("Retained JellyHA license does not contain the recorded upstream notice")
 
     if not THIRD_PARTY_NOTICE.exists():
         errors.append("Missing THIRD_PARTY_NOTICES.md")
@@ -137,23 +124,22 @@ def audit() -> list[str]:
         if "zupancicmarko/JellyHA" not in notice or "License: MIT" not in notice:
             errors.append("THIRD_PARTY_NOTICES.md does not record JellyHA provenance")
 
+    if inventory.get("retained_license_path") != "docs/provenance/JELLYHA_LICENSE.txt":
+        errors.append("JellyHA provenance does not point to the retained public license")
+    if inventory.get("public_source_snapshot_retained") is not False:
+        errors.append("JellyHA provenance must record that no public source snapshot is retained")
+    if inventory.get("historical_snapshot_commit") is not None:
+        errors.append("Unknown historical JellyHA snapshot commit must remain explicitly null")
 
     adaptation_commit = inventory.get("adaptation_source_commit")
     if adaptation_commit != "6b8b2f679f922ea3a0d9c3c4b9827ee7053308f9":
-        errors.append("Step 42B get_item adaptation source is not pinned to the verified JellyHA commit")
+        errors.append("JellyHA adaptation source is not pinned to the verified commit")
     adaptation_scope = set(inventory.get("adaptation_source_scope") or [])
     if adaptation_scope != {
         "custom_components/jellyha/services.py",
         "custom_components/jellyha/api.py",
     }:
-        errors.append("Step 42B get_item adaptation scope is incomplete")
-
-    if inventory.get("vendored_upstream_commit") is not None:
-        # Once a real SHA is recorded, provenance_status must also be updated.
-        if inventory.get("provenance_status") == "commit_sha_missing":
-            errors.append("Vendored commit is populated but provenance_status still says commit_sha_missing")
-    elif inventory.get("provenance_status") != "commit_sha_missing":
-        errors.append("Missing vendored commit SHA must remain explicitly marked as a provenance gap")
+        errors.append("JellyHA adaptation source scope is incomplete")
 
     return errors
 
@@ -166,7 +152,10 @@ def main() -> int:
             print(f"- {error}")
         return 1
     print("JellyHA dependency/provenance audit: PASS")
-    print("Tracked upstream services: jellyha.get_item, jellyha.search, jellyha.play_on_chromecast (all retired runtime/provenance only)")
+    print(
+        "Tracked upstream services: jellyha.get_item, jellyha.search, "
+        "jellyha.play_on_chromecast (all retired runtime/provenance only)"
+    )
     return 0
 
 

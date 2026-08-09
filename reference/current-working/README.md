@@ -1,36 +1,9 @@
-# Sanitized Current-Working Baseline
+# Sanitized Compatibility Fixtures
 
-Snapshot lineage: stable household implementation through Step 40.
+This directory contains a small sanitized Home Assistant compatibility fixture retained for regression tests.
 
-This directory preserves the project's behavioral contracts for development and
-testing. It is a **sanitized public reference**, not an exact Home Assistant
-backup and not a deployment package.
+It is **not** a deployment package, a live Home Assistant backup, or the supported installation surface. New users should follow the root README and `docs/quick-start.md`.
 
-## Contract boundary
+The fixture contains only public/example values and intentionally excludes credentials, live queue data, databases, logs, Home Assistant `.storage` data, unrelated household automation, and private filesystem/network details.
 
-The following behavior is treated as stable unless testing identifies a genuine
-bug:
-
-- media intent resolver response structure
-- orchestrator operation and result structure
-- playback item structure and Jellyfin item IDs
-- pending-selection helper behavior
-- queue-service request and response structures
-- queue advancement, history, repeat, shuffle, and completion behavior
-
-## Sanitization
-
-- the media-server and queue-service address is `MEDIA_SERVER_HOST`
-- the Jellyfin user identifier is `JELLYFIN_USER_ID`
-- media-player entities use `media_player.example_*`
-- player aliases are explicitly labeled examples
-- unrelated household automations are not included
-- NAS-specific queue-service paths are portable relative paths
-- credentials, live queue data, databases, logs, and `.storage` data are excluded
-
-The exact household reference must remain in the ignored local path
-`reference/private-current-working/household-step-40/` and must never be
-committed.
-
-The copied JellyHA source remains a provenance reference for Step 42 and retains
-its upstream license and attribution.
+The current Jellyfin Media Assistant runtime is implemented under `custom_components/jellyfin_assist/`. Historical JellyHA source used during migration is not distributed here; third-party attribution is retained in `THIRD_PARTY_NOTICES.md` and `docs/provenance/`.

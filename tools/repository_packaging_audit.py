@@ -16,6 +16,7 @@ def _failures() -> list[str]:
 
     required_root = [
         "README.md",
+        "CONTRIBUTING.md",
         "LICENSE",
         "THIRD_PARTY_NOTICES.md",
         "CHANGELOG.md",
@@ -25,6 +26,32 @@ def _failures() -> list[str]:
     for name in required_root:
         if not (ROOT / name).is_file():
             failures.append(f"missing root release file: {name}")
+
+
+    required_docs = [
+        "README.md",
+        "quick-start.md",
+        "voice-commands.md",
+        "configuration.md",
+        "architecture.md",
+        "developer-guide.md",
+        "known-limitations.md",
+        "provenance/jellyha.json",
+        "provenance/JELLYHA_LICENSE.txt",
+    ]
+    for name in required_docs:
+        if not (ROOT / "docs" / name).is_file():
+            failures.append(f"missing public documentation file: docs/{name}")
+
+    historical_step_docs = sorted((ROOT / "docs").glob("step-*.md"))
+    if historical_step_docs:
+        failures.append(
+            "historical step-by-step migration docs remain in public docs/: "
+            + ", ".join(path.name for path in historical_step_docs)
+        )
+
+    if (ROOT / "reference" / "current-working" / "jellyha").exists():
+        failures.append("historical JellyHA source snapshot remains in public repository")
 
     integration_dirs = [p for p in (ROOT / "custom_components").iterdir() if p.is_dir()]
     if [p.name for p in integration_dirs] != ["jellyfin_assist"]:
@@ -61,7 +88,9 @@ def _failures() -> list[str]:
         "Installation with HACS",
         "Chromecast",
         "No separate Python installation",
-        "custom_sentences",
+        "AI-assisted development",
+        "Voice & Assist Command Guide",
+        "Architecture",
         "MIT License",
     ]
     for phrase in required_readme_phrases:
@@ -89,9 +118,10 @@ def main() -> int:
         return 1
     print("- release metadata: PASS")
     print("- HACS on-disk metadata: PASS")
-    print("- beta documentation/license surface: PASS")
+    print("- public documentation/license surface: PASS")
+    print("- historical migration/reference cleanup: PASS")
     print("- retired runtime artifacts: PASS")
-    print("PASS (brand asset and public GitHub settings are checked in Step 46C2)")
+    print("PASS (repository-hosted settings are validated separately)")
     return 0
 
 
