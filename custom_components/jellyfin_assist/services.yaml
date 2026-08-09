@@ -1,0 +1,462 @@
+play_on_chromecast:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    entity_id:
+      required: true
+      selector:
+        entity:
+          domain: media_player
+    item_id:
+      required: true
+      selector:
+        text: null
+get_item:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    item_id:
+      required: true
+      selector:
+        text: null
+search:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    query:
+      required: true
+      example: three am
+      selector:
+        text: null
+    media_type:
+      required: false
+      selector:
+        select:
+          options:
+          - Movie
+          - Series
+          - Episode
+          - Audio
+          - MusicAlbum
+          - MusicArtist
+          custom_value: false
+    artist:
+      required: false
+      selector:
+        text: null
+    album:
+      required: false
+      selector:
+        text: null
+    series:
+      required: false
+      selector:
+        text: null
+    year:
+      required: false
+      selector:
+        number:
+          min: 1800
+          max: 3000
+          mode: box
+resolve_media_player:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    media_player:
+      required: false
+      selector:
+        text: {}
+    query:
+      required: false
+      selector:
+        text: null
+    operation:
+      required: false
+      selector:
+        select:
+          options:
+          - play
+          - add
+          - queue_next
+          - whats_playing
+          - what_just_played
+          - queue_status
+          - queue_clear
+          - queue_shuffle
+          - repeat_item_enable
+          - repeat_queue_enable
+          - repeat_off
+          - repeat_item_toggle
+          - repeat_queue_toggle
+    media_type:
+      required: false
+      selector:
+        text: null
+    artist:
+      required: false
+      selector:
+        text: null
+    album:
+      required: false
+      selector:
+        text: null
+    series:
+      required: false
+      selector:
+        text: null
+    year:
+      required: false
+      selector:
+        number:
+          min: 1800
+          max: 3000
+          mode: box
+    season:
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 100
+          mode: box
+    episode:
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 1000
+          mode: box
+resume_media_request:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    media_player:
+      required: true
+      selector:
+        text: {}
+search_season:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    series_id:
+      required: true
+      selector:
+        text: null
+    season:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 1000
+          mode: box
+search_episode:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    series_id:
+      required: true
+      selector:
+        text: null
+    season:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 1000
+          mode: box
+    episode:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 10000
+          mode: box
+search_episode_title:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    series_id:
+      required: true
+      selector:
+        text: null
+    episode_title:
+      required: true
+      selector:
+        text: null
+get_album_tracks:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    album_id:
+      required: true
+      selector:
+        text: null
+get_artist_tracks:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    artist_id:
+      required: true
+      selector:
+        text: null
+queue_get:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    media_player:
+      required: true
+      selector:
+        entity:
+          domain: media_player
+queue_add:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    media_player:
+      required: true
+      selector:
+        entity:
+          domain: media_player
+    id:
+      required: true
+      selector:
+        text: null
+    name:
+      required: false
+      selector:
+        text: null
+    type:
+      required: false
+      selector:
+        text: null
+    artist:
+      required: false
+      selector:
+        text: null
+    album:
+      required: false
+      selector:
+        text: null
+    series:
+      required: false
+      selector:
+        text: null
+    season:
+      required: false
+    episode:
+      required: false
+queue_next:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    media_player:
+      required: true
+      selector:
+        entity:
+          domain: media_player
+queue_clear:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    media_player:
+      required: true
+      selector:
+        entity:
+          domain: media_player
+queue_set_repeat:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    media_player:
+      required: true
+      selector:
+        entity:
+          domain: media_player
+    repeat_item:
+      required: true
+      selector:
+        boolean: null
+    repeat_queue:
+      required: true
+      selector:
+        boolean: null
+queue_shuffle:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    media_player:
+      required: true
+      selector:
+        entity:
+          domain: media_player
+queue_command:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    operation:
+      required: true
+      selector:
+        select:
+          options:
+          - queue_next
+          - whats_playing
+          - what_just_played
+          - queue_status
+          - queue_clear
+          - queue_shuffle
+          - repeat_item_enable
+          - repeat_queue_enable
+          - repeat_off
+          - repeat_item_toggle
+          - repeat_queue_toggle
+    media_player:
+      required: false
+      selector:
+        text: {}
+    media_player_name:
+      required: false
+      selector:
+        text: {}
+media_orchestrator:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    query:
+      required: true
+      selector:
+        text: null
+    media_player:
+      required: false
+      selector:
+        text: {}
+    media_player_name:
+      required: false
+      selector:
+        text: {}
+    operation:
+      required: false
+      default: play
+      selector:
+        select:
+          options:
+          - play
+          - add
+    media_type:
+      required: false
+      selector:
+        text: null
+    artist:
+      required: false
+      selector:
+        text: null
+    year:
+      required: false
+      selector:
+        number:
+          min: 1800
+          max: 3000
+          mode: box
+    series:
+      required: false
+      selector:
+        text: null
+    season:
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 100
+          mode: box
+    episode:
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 1000
+          mode: box
+play_pending_media:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    selection:
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 20
+          mode: box
+resume_pending_media_request:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    media_player:
+      required: true
+      selector:
+        text: {}
+repair_voice_sentences:
+  fields:
+    overwrite_user_modified:
+      required: false
+      default: false
+      selector:
+        boolean: {}

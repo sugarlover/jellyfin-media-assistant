@@ -1,0 +1,77 @@
+{
+  "project": "JellyHA",
+  "upstream_repository": "https://github.com/zupancicmarko/JellyHA",
+  "upstream_ref_observed": "main",
+  "upstream_observed_on": "2026-08-07",
+  "upstream_manifest_version_observed": "1.2.0",
+  "license": "MIT",
+  "copyright": "Copyright (c) 2026 zupancicmarko",
+  "vendored_reference_path": "reference/current-working/jellyha",
+  "vendored_manifest_version": "1.2.0",
+  "vendored_upstream_commit": null,
+  "provenance_status": "commit_sha_missing",
+  "provenance_note": "The historical Step 40 vendored snapshot still lacks its original commit SHA. Step 42B implementation work is separately pinned to upstream commit 6b8b2f679f922ea3a0d9c3c4b9827ee7053308f9 for services.py and api.py.",
+  "not_upstream_dependencies": [
+    "jellyha-queue container/service name",
+    "rest_command.jellyha_queue_* names",
+    "script.jellyha_* custom script names",
+    "input_boolean/input_text helper names using the jellyha_ prefix",
+    "tools/reference/current-working/home-assistant/scripts.yaml duplicate reference mirror"
+  ],
+  "adaptation_source_commit": "6b8b2f679f922ea3a0d9c3c4b9827ee7053308f9",
+  "adaptation_source_scope": [
+    "custom_components/jellyha/services.py",
+    "custom_components/jellyha/api.py"
+  ],
+  "adaptation_source_purpose": "Step 42B native get_item contract parity",
+  "adaptation_source_verified_on": "2026-08-07",
+  "tracked_upstream_capabilities": [
+    {
+      "service": "jellyha.get_item",
+      "classification": "retired_runtime_provenance_reference",
+      "canonical_call_count": 0,
+      "canonical_caller": null,
+      "response_contract": "{item: <raw Jellyfin item mapping>}",
+      "upstream_files": [
+        "custom_components/jellyha/services.py",
+        "custom_components/jellyha/api.py"
+      ],
+      "replacement_priority": 1,
+      "replacement_reason": "Native jellyfin_assist.get_item is the sole runtime item lookup path. The temporary failure fallback and compare_get_item migration diagnostic were retired after native production use and Chromecast parity were proven.",
+      "additional_caller": null,
+      "migration_status": "runtime_retired_step_44a"
+    },
+    {
+      "service": "jellyha.search",
+      "classification": "retired_runtime_provenance_reference",
+      "canonical_call_count": 0,
+      "canonical_caller": null,
+      "additional_caller": null,
+      "response_contract": "{items: [normalized item mappings]}",
+      "upstream_files": [
+        "custom_components/jellyha/services.py",
+        "custom_components/jellyha/api.py",
+        "custom_components/jellyha/coordinator.py"
+      ],
+      "replacement_priority": 2,
+      "replacement_reason": "Native jellyfin_assist.search is the sole runtime search backend. The optional compare_search migration diagnostic and its shadow runtime adapter were removed after standalone operation was proven with JellyHA disabled.",
+      "migration_status": "runtime_retired_step_44b"
+    },
+    {
+      "service": "jellyha.play_on_chromecast",
+      "classification": "retired_runtime_provenance_reference",
+      "canonical_call_count": 0,
+      "canonical_caller": null,
+      "response_contract": "no response; successful call initiates playback through media_player.play_media",
+      "upstream_files": [
+        "custom_components/jellyha/services.py",
+        "custom_components/jellyha/api.py",
+        "custom_components/jellyha/media_strategy.py"
+      ],
+      "replacement_priority": 3,
+      "replacement_reason": "Native jellyfin_assist.play_on_chromecast passed automated parity and live household Movie, Episode, Audio, Series-to-Next-Up, and full Assist pipeline tests. Standalone playback was then proven with JellyHA disabled; rollback is now repository history rather than a runtime JellyHA path.",
+      "migration_status": "runtime_retired_step_44b",
+      "additional_caller": null
+    }
+  ]
+}

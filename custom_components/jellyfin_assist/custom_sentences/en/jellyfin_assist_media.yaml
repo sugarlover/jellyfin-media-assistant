@@ -1,0 +1,382 @@
+language: "en"
+
+intents:
+
+  # Queue-management intents appear before wildcard media intents so short
+  # queue commands are not mistaken for media titles.
+
+  JellyfinAssistQueueNext:
+    data:
+      - sentences:
+          - "next [item] on {media_player_request}"
+          - "[the] next (one|show|episode|movie|song|track) on {media_player_request}"
+          - "(play|watch|put on|start) [the] next [item] on {media_player_request}"
+          - "(play|watch|put on|start) [the] next (one|show|episode|movie|song|track) on {media_player_request}"
+          - "(skip|go) [to] [the] next [item] on {media_player_request}"
+          - "(skip|go) [to] [the] next (one|show|episode|movie|song|track) on {media_player_request}"
+          - "advance [the] queue on {media_player_request}"
+          - "next [item]"
+          - "[the] next (one|show|episode|movie|song|track)"
+          - "(play|watch|put on|start) [the] next [item]"
+          - "(play|watch|put on|start) [the] next (one|show|episode|movie|song|track)"
+          - "(skip|go) [to] [the] next [item]"
+          - "(skip|go) [to] [the] next (one|show|episode|movie|song|track)"
+          - "advance [the] queue"
+
+
+  JellyfinAssistQueueWhatsPlaying:
+    data:
+      - sentences:
+          - "what is playing on {media_player_request}"
+          - "what's playing on {media_player_request}"
+          - "what is currently playing on {media_player_request}"
+          - "what is playing"
+          - "what's playing"
+          - "what is currently playing"
+
+
+  JellyfinAssistQueueWhatJustPlayed:
+    data:
+      - sentences:
+          - "what just played on {media_player_request}"
+          - "what was just playing on {media_player_request}"
+          - "what played last on {media_player_request}"
+          - "what just played"
+          - "what was just playing"
+          - "what played last"
+
+
+  JellyfinAssistQueueStatus:
+    data:
+      - sentences:
+          - "queue status on {media_player_request}"
+          - "what is [the] queue status on {media_player_request}"
+          - "what's [the] queue status on {media_player_request}"
+          - "what is in [the] queue on {media_player_request}"
+          - "what's in [the] queue on {media_player_request}"
+          - "how many items are in [the] queue on {media_player_request}"
+          - "queue status"
+          - "what is [the] queue status"
+          - "what's [the] queue status"
+          - "what is in [the] queue"
+          - "what's in [the] queue"
+          - "how many items are in [the] queue"
+
+
+  JellyfinAssistQueueClear:
+    data:
+      - sentences:
+          # Clearing is destructive, so a player must always be spoken.
+          - "(clear|empty) [the] queue (on|for) {media_player_request}"
+          - "(clear|empty) {media_player_request} queue"
+
+
+  JellyfinAssistQueueShuffle:
+    data:
+      - sentences:
+          - "(shuffle|randomize) [the] queue on {media_player_request}"
+          - "(shuffle|randomize) [the] upcoming items on {media_player_request}"
+          - "(shuffle|randomize) [the] queue"
+          - "(shuffle|randomize) [the] upcoming items"
+
+
+  JellyfinAssistQueueRepeatItemEnable:
+    data:
+      - sentences:
+          - "repeat (this|the current) (item|song|track|episode|show|movie) on {media_player_request}"
+          - "repeat [the] current (item|song|track|episode|show|movie) on {media_player_request}"
+          - "turn on (repeat item|item repeat) on {media_player_request}"
+          - "repeat (this|the current) (item|song|track|episode|show|movie)"
+          - "repeat [the] current (item|song|track|episode|show|movie)"
+          - "turn on (repeat item|item repeat)"
+
+
+  JellyfinAssistQueueRepeatQueueEnable:
+    data:
+      - sentences:
+          - "repeat [the] queue on {media_player_request}"
+          - "turn on (repeat queue|queue repeat) on {media_player_request}"
+          - "loop [the] queue on {media_player_request}"
+          - "repeat [the] queue"
+          - "turn on (repeat queue|queue repeat)"
+          - "loop [the] queue"
+
+
+  JellyfinAssistQueueRepeatOff:
+    data:
+      - sentences:
+          - "turn repeat off on {media_player_request}"
+          - "turn off repeat on {media_player_request}"
+          - "disable repeat on {media_player_request}"
+          - "stop repeating on {media_player_request}"
+          - "turn repeat off"
+          - "turn off repeat"
+          - "disable repeat"
+          - "stop repeating"
+
+
+  JellyfinAssistQueueRepeatItemToggle:
+    data:
+      - sentences:
+          - "toggle repeat item on {media_player_request}"
+          - "toggle item repeat on {media_player_request}"
+          - "toggle repeat item"
+          - "toggle item repeat"
+
+
+  JellyfinAssistQueueRepeatQueueToggle:
+    data:
+      - sentences:
+          - "toggle repeat queue on {media_player_request}"
+          - "toggle queue repeat on {media_player_request}"
+          - "toggle repeat queue"
+          - "toggle queue repeat"
+
+
+  JellyfinAssistMusicAlbumPlay:
+    data:
+      - sentences:
+          # Capture the full album request once. The native intent handler separates an
+          # optional trailing "by <artist>" phrase without competing wildcards.
+          - "(play|put on|start) [the] album {album_request} on {media_player}"
+          - "(play|put on|start) [the] album {album_request}"
+
+
+  JellyfinAssistMusicAlbumAdd:
+    data:
+      - sentences:
+          # The same single-slot form supports requests with or without an
+          # artist while avoiding ambiguous album/artist wildcard matches.
+          - "(add|queue) [the] album {album_request} (to|on) {media_player}"
+          - "(add|queue) [the] album {album_request}"
+
+
+  JellyfinAssistMusicSongPlay:
+    data:
+      - sentences:
+          # Explicit song wording passes Audio to the resolver and optionally
+          # separates a trailing "by <artist>" phrase in the native intent handler.
+          - "(play|put on|start) [the] song {song_request} on {media_player}"
+          - "(play|put on|start) [the] song {song_request}"
+
+
+  JellyfinAssistMusicSongAdd:
+    data:
+      - sentences:
+          - "(add|queue) [the] song {song_request} (to|on) {media_player}"
+          - "(add|queue) [the] song {song_request}"
+
+
+  JellyfinAssistMusicArtistPlay:
+    data:
+      - sentences:
+          # Artist wording is explicit so bare ambiguous titles continue to use
+          # the established movie/TV-first generic resolver.
+          - "(play|put on|start) (music|songs) by {artist_request} on {media_player}"
+          - "(play|put on|start) (music|songs) by {artist_request}"
+          - "(play|put on|start) [the] artist {artist_request} on {media_player}"
+          - "(play|put on|start) [the] artist {artist_request}"
+          - "(play|put on|start) {artist_request} (music|songs) on {media_player}"
+          - "(play|put on|start) {artist_request} (music|songs)"
+
+
+  JellyfinAssistMusicArtistAdd:
+    data:
+      - sentences:
+          - "(add|queue) (music|songs) by {artist_request} (to|on) {media_player}"
+          - "(add|queue) (music|songs) by {artist_request}"
+          - "(add|queue) [the] artist {artist_request} (to|on) {media_player}"
+          - "(add|queue) [the] artist {artist_request}"
+          - "(add|queue) {artist_request} (music|songs) (to|on) {media_player}"
+          - "(add|queue) {artist_request} (music|songs)"
+
+
+  JellyfinAssistMoviePlay:
+    data:
+      - sentences:
+          # Explicit movie wording forces a Movie search and avoids music or
+          # television matches with similar names.
+          - "(play|watch|put on|start) [the] (movie|film) {movie_request} on {media_player}"
+          - "(play|watch|put on|start) [the] (movie|film) {movie_request}"
+
+
+  JellyfinAssistMovieAdd:
+    data:
+      - sentences:
+          - "(add|queue) [the] (movie|film) {movie_request} (to|on) {media_player}"
+          - "(add|queue) [the] (movie|film) {movie_request}"
+
+
+  JellyfinAssistEpisodeTitlePlay:
+    data:
+      - sentences:
+          # The episode_request wildcard may include an optional trailing
+          # "from <series>" phrase; the native intent handler separates the two parts.
+          - "(play|watch|put on|start) [the] (episode|TV episode|television episode) {episode_request} on {media_player}"
+          - "(play|watch|put on|start) [the] (episode|TV episode|television episode) {episode_request}"
+
+
+  JellyfinAssistEpisodeTitleAdd:
+    data:
+      - sentences:
+          - "(add|queue) [the] (episode|TV episode|television episode) {episode_request} (to|on) {media_player}"
+          - "(add|queue) [the] (episode|TV episode|television episode) {episode_request}"
+
+
+  JellyfinAssistShowPlay:
+    data:
+      - sentences:
+          # Specific season and episode forms precede the general show form.
+          - "(play|watch|put on|start) season {season} episode {episode} of [the] (show|series|TV show|television show) {show_request} on {media_player}"
+          - "(play|watch|put on|start) season {season} episode {episode} of [the] (show|series|TV show|television show) {show_request}"
+          - "(play|watch|put on|start) episode {episode} of season {season} of [the] (show|series|TV show|television show) {show_request} on {media_player}"
+          - "(play|watch|put on|start) episode {episode} of season {season} of [the] (show|series|TV show|television show) {show_request}"
+          - "(play|watch|put on|start) [the] (show|series|TV show|television show) {show_request} season {season} episode {episode} on {media_player}"
+          - "(play|watch|put on|start) [the] (show|series|TV show|television show) {show_request} season {season} episode {episode}"
+
+          - "(play|watch|put on|start) season {season} of [the] (show|series|TV show|television show) {show_request} on {media_player}"
+          - "(play|watch|put on|start) season {season} of [the] (show|series|TV show|television show) {show_request}"
+          - "(play|watch|put on|start) [the] (show|series|TV show|television show) {show_request} season {season} on {media_player}"
+          - "(play|watch|put on|start) [the] (show|series|TV show|television show) {show_request} season {season}"
+
+          - "(play|watch|put on|start) [the] (show|series|TV show|television show) {show_request} on {media_player}"
+          - "(play|watch|put on|start) [the] (show|series|TV show|television show) {show_request}"
+
+
+  JellyfinAssistShowAdd:
+    data:
+      - sentences:
+          - "(add|queue) season {season} episode {episode} of [the] (show|series|TV show|television show) {show_request} (to|on) {media_player}"
+          - "(add|queue) season {season} episode {episode} of [the] (show|series|TV show|television show) {show_request}"
+          - "(add|queue) episode {episode} of season {season} of [the] (show|series|TV show|television show) {show_request} (to|on) {media_player}"
+          - "(add|queue) episode {episode} of season {season} of [the] (show|series|TV show|television show) {show_request}"
+          - "(add|queue) [the] (show|series|TV show|television show) {show_request} season {season} episode {episode} (to|on) {media_player}"
+          - "(add|queue) [the] (show|series|TV show|television show) {show_request} season {season} episode {episode}"
+
+          - "(add|queue) season {season} of [the] (show|series|TV show|television show) {show_request} (to|on) {media_player}"
+          - "(add|queue) season {season} of [the] (show|series|TV show|television show) {show_request}"
+          - "(add|queue) [the] (show|series|TV show|television show) {show_request} season {season} (to|on) {media_player}"
+          - "(add|queue) [the] (show|series|TV show|television show) {show_request} season {season}"
+
+          - "(add|queue) [the] (show|series|TV show|television show) {show_request} (to|on) {media_player}"
+          - "(add|queue) [the] (show|series|TV show|television show) {show_request}"
+
+
+  JellyfinAssistMediaPlay:
+    data:
+      - sentences:
+          # Specific episode forms must precede generic wildcard forms.
+          - "(play|watch|put on|start) season {season} episode {episode} of [the] {media} on {media_player}"
+          - "(play|watch|put on|start) season {season} episode {episode} of [the] {media}"
+          - "(play|watch|put on|start) episode {episode} of season {season} of [the] {media} on {media_player}"
+          - "(play|watch|put on|start) episode {episode} of season {season} of [the] {media}"
+          - "(play|watch|put on|start) [the] {media} season {season} episode {episode} on {media_player}"
+          - "(play|watch|put on|start) [the] {media} season {season} episode {episode}"
+
+          # Explicit season forms.
+          - "(play|watch|put on|start) season {season} of [the] {media} on {media_player}"
+          - "(play|watch|put on|start) season {season} of [the] {media}"
+          - "(play|watch|put on|start) [the] {media} season {season} on {media_player}"
+          - "(play|watch|put on|start) [the] {media} season {season}"
+
+          # Generic forms must remain last because {media} is a wildcard.
+          - "(play|watch|put on|start) [the] {media} on {media_player}"
+          - "(play|watch|put on|start) [the] {media}"
+
+
+  JellyfinAssistMediaSelect:
+    data:
+      - sentences:
+          - "{selection}"
+          - "number {selection}"
+          - "play number {selection}"
+          - "select number {selection}"
+          - "the {selection} one"
+
+  JellyfinAssistMediaPlayerSelect:
+    data:
+      # Pending-player follow-ups require an explicit continuation phrase.
+      # Bare wildcard player phrases previously intercepted native Home
+      # Assistant commands such as "pause Movie Screen" and "turn off Example Chromecast."
+      - sentences:
+          - "(use|choose|select) {media_player_request}"
+          - "(use|choose|select) [the] player {media_player_request}"
+          - "(play|put|add) it (on|to) {media_player_request}"
+          - "continue (on|with) {media_player_request}"
+
+
+
+  JellyfinAssistMediaAdd:
+    data:
+      - sentences:
+          # Specific episode forms with an explicit player.
+          - "(add|queue) season {season} episode {episode} of [the] {media} (to|on) {media_player}"
+          - "(add|queue) episode {episode} of season {season} of [the] {media} (to|on) {media_player}"
+          - "(add|queue) [the] {media} season {season} episode {episode} (to|on) {media_player}"
+
+          # Explicit season forms with an explicit player.
+          - "(add|queue) season {season} of [the] {media} (to|on) {media_player}"
+          - "(add|queue) [the] {media} season {season} (to|on) {media_player}"
+
+          # Specific forms using the default player.
+          - "(add|queue) season {season} episode {episode} of [the] {media}"
+          - "(add|queue) episode {episode} of season {season} of [the] {media}"
+          - "(add|queue) [the] {media} season {season} episode {episode}"
+          - "(add|queue) season {season} of [the] {media}"
+          - "(add|queue) [the] {media} season {season}"
+
+          # Generic forms must remain last because {media} is a wildcard.
+          - "(add|queue) [the] {media} (to|on) {media_player}"
+          - "(add|queue) [the] {media}"
+
+
+lists:
+
+  album_request:
+    wildcard: true
+
+  song_request:
+    wildcard: true
+
+  artist_request:
+    wildcard: true
+
+  episode_request:
+    wildcard: true
+
+  movie_request:
+    wildcard: true
+
+  show_request:
+    wildcard: true
+
+  media:
+    wildcard: true
+
+  media_player_request:
+    wildcard: true
+
+  media_player:
+    values:
+      # Public examples only. Real aliases and entity IDs stay in each
+      # Home Assistant instance and are resolved by Jellyfin Media Assistant.
+      - in: "Example Chromecast"
+        out: "media_player.example_chromecast"
+
+      - in: "Example Secondary Chromecast"
+        out: "media_player.example_secondary_chromecast"
+
+  season:
+    range:
+      from: 1
+      to: 100
+
+  episode:
+    range:
+      from: 1
+      to: 1000
+
+  selection:
+    range:
+      from: 1
+      to: 20

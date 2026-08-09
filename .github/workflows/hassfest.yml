@@ -1,0 +1,16 @@
+name: Validate with hassfest
+
+# Hassfest is intentionally manual while the development repository is private.
+# Step 46C2 will enable push/pull-request/scheduled validation immediately before
+# the sanitized public repository is published.
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: home-assistant/actions/hassfest@master

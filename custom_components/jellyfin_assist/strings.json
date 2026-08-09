@@ -1,0 +1,548 @@
+{
+  "title": "Jellyfin Media Assistant",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Jellyfin",
+        "description": "Connect the read-only search catalog to a Jellyfin server. Create an API key in Jellyfin and enter the user ID whose accessible libraries should be indexed.",
+        "data": {
+          "server_url": "Jellyfin server URL",
+          "api_key": "API key",
+          "user_id": "Jellyfin user ID",
+          "verify_ssl": "Verify SSL certificate"
+        },
+        "data_description": {
+          "server_url": "Complete local URL, including http:// or https:// and any port.",
+          "api_key": "Stored in the Home Assistant config entry and never included in diagnostics or search responses.",
+          "user_id": "The Jellyfin user whose library permissions define the searchable catalog.",
+          "verify_ssl": "Disable only for a trusted local server using a self-signed certificate."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to connect to Jellyfin.",
+      "invalid_auth": "Jellyfin rejected the API key or user access.",
+      "invalid_configuration": "The server URL, API key, or user ID is invalid.",
+      "unknown": "Unexpected error. Check the Home Assistant log."
+    },
+    "abort": {
+      "already_configured": "This Jellyfin server and user are already configured."
+    }
+  },
+  "exceptions": {
+    "config_entry_not_found": {
+      "message": "The selected Jellyfin Media Assistant configuration was not found."
+    },
+    "config_entry_not_loaded": {
+      "message": "The selected Jellyfin Media Assistant configuration is not loaded."
+    },
+    "config_entry_required": {
+      "message": "Choose a Jellyfin Media Assistant configuration."
+    },
+    "invalid_search_request": {
+      "message": "The Jellyfin search request is invalid."
+    },
+    "catalog_unavailable": {
+      "message": "The Jellyfin search catalog is not available yet."
+    },
+    "invalid_item_id": {
+      "message": "Choose a Jellyfin item ID."
+    },
+    "item_lookup_failed": {
+      "message": "The Jellyfin item could not be retrieved."
+    },
+    "invalid_playback_target": {
+      "message": "Choose a Home Assistant media_player entity."
+    },
+    "playback_target_not_found": {
+      "message": "The selected media player is not available in Home Assistant."
+    },
+    "no_next_up_episode": {
+      "message": "No Next Up episode is available for that Jellyfin series or season."
+    },
+    "native_playback_failed": {
+      "message": "Native Chromecast playback could not be started."
+    },
+    "library_query_failed": {
+      "message": "The Jellyfin library query could not be completed."
+    }
+  },
+  "services": {
+    "get_item": {
+      "name": "Get Jellyfin item",
+      "description": "Fetches full read-only metadata for one Jellyfin item using the native Jellyfin Media Assistant client and the established response contract.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Configuration",
+          "description": "Optional when exactly one Jellyfin Media Assistant configuration is loaded; otherwise choose the configuration to use."
+        },
+        "item_id": {
+          "name": "Item ID",
+          "description": "The Jellyfin item ID to retrieve."
+        }
+      }
+    },
+    "play_on_chromecast": {
+      "name": "Play Jellyfin item on Chromecast",
+      "description": "Starts production Chromecast playback using the native Jellyfin Media Assistant client and validated stream strategy.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Configuration",
+          "description": "Optional when exactly one Jellyfin Media Assistant configuration is loaded; otherwise choose the configuration to use."
+        },
+        "entity_id": {
+          "name": "Media player",
+          "description": "The Chromecast media_player entity that should receive playback."
+        },
+        "item_id": {
+          "name": "Item ID",
+          "description": "The Jellyfin item ID to play. Series and Season items resolve through Jellyfin Next Up before playback."
+        }
+      }
+    },
+    "search": {
+      "name": "Search Jellyfin catalog",
+      "description": "Searches the cached Jellyfin metadata catalog using robust local matching. This action is read-only and always returns response data.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Configuration",
+          "description": "Optional when exactly one Jellyfin Media Assistant configuration is loaded; otherwise choose the configuration to use."
+        },
+        "query": {
+          "name": "Query",
+          "description": "The media title or spoken search text."
+        },
+        "media_type": {
+          "name": "Media type",
+          "description": "An optional Jellyfin media type used as a hard search constraint."
+        },
+        "artist": {
+          "name": "Artist",
+          "description": "Optional artist context used to rank otherwise plausible matches."
+        },
+        "album": {
+          "name": "Album",
+          "description": "Optional album context used to rank otherwise plausible matches."
+        },
+        "series": {
+          "name": "Series",
+          "description": "Optional series context used to rank otherwise plausible matches."
+        },
+        "year": {
+          "name": "Year",
+          "description": "Optional production year context."
+        }
+      }
+    },
+    "resolve_media_player": {
+      "name": "Resolve media player",
+      "description": "Resolves an explicitly supplied media player or the configured default and stores a pending media request when a player is still required.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Configuration",
+          "description": "Optional when exactly one Jellyfin Media Assistant configuration is loaded; otherwise choose the configuration to use."
+        },
+        "media_player": {
+          "name": "Media player",
+          "description": "A media-player entity ID, Home Assistant name, or native entity alias."
+        },
+        "query": {
+          "name": "Query",
+          "description": "Optional media query to preserve while waiting for a player."
+        },
+        "operation": {
+          "name": "Operation",
+          "description": "Whether the pending request should play or add media."
+        },
+        "media_type": {
+          "name": "Media type",
+          "description": "Optional media type to preserve."
+        },
+        "artist": {
+          "name": "Artist",
+          "description": "Optional artist context to preserve."
+        },
+        "album": {
+          "name": "Album",
+          "description": "Optional album context to preserve."
+        },
+        "series": {
+          "name": "Series",
+          "description": "Optional series context to preserve."
+        },
+        "year": {
+          "name": "Year",
+          "description": "Optional year context to preserve."
+        },
+        "season": {
+          "name": "Season",
+          "description": "Optional season number to preserve."
+        },
+        "episode": {
+          "name": "Episode",
+          "description": "Optional episode number to preserve."
+        }
+      }
+    },
+    "resume_media_request": {
+      "name": "Resume pending media request",
+      "description": "Applies a selected media player to the request that was waiting for a playback target.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Configuration",
+          "description": "Optional when exactly one Jellyfin Media Assistant configuration is loaded; otherwise choose the configuration to use."
+        },
+        "media_player": {
+          "name": "Media player",
+          "description": "A media-player entity ID, Home Assistant name, or native entity alias."
+        }
+      }
+    },
+    "search_season": {
+      "name": "Get season episodes",
+      "description": "Fetches the ordered Jellyfin episodes for one series season using the native read-only client.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Configuration",
+          "description": "Optional when exactly one Jellyfin Media Assistant configuration is loaded; otherwise choose the configuration to use."
+        },
+        "series_id": {
+          "name": "Series ID",
+          "description": "The Jellyfin series item ID."
+        },
+        "season": {
+          "name": "Season",
+          "description": "The season number to retrieve."
+        }
+      }
+    },
+    "search_episode": {
+      "name": "Get episode",
+      "description": "Fetches an episode by Jellyfin series ID, season number, and episode number using the native read-only client.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Configuration",
+          "description": "Optional when exactly one Jellyfin Media Assistant configuration is loaded; otherwise choose the configuration to use."
+        },
+        "series_id": {
+          "name": "Series ID",
+          "description": "The Jellyfin series item ID."
+        },
+        "season": {
+          "name": "Season",
+          "description": "The season number to retrieve."
+        },
+        "episode": {
+          "name": "Episode",
+          "description": "The episode number to retrieve."
+        }
+      }
+    },
+    "search_episode_title": {
+      "name": "Search episode title",
+      "description": "Fetches candidate episodes by title within one Jellyfin series using the native read-only client.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Configuration",
+          "description": "Optional when exactly one Jellyfin Media Assistant configuration is loaded; otherwise choose the configuration to use."
+        },
+        "series_id": {
+          "name": "Series ID",
+          "description": "The Jellyfin series item ID."
+        },
+        "episode_title": {
+          "name": "Episode title",
+          "description": "The episode title to search for."
+        }
+      }
+    },
+    "get_album_tracks": {
+      "name": "Get album tracks",
+      "description": "Fetches ordered audio tracks for one Jellyfin album using the native read-only client.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Configuration",
+          "description": "Optional when exactly one Jellyfin Media Assistant configuration is loaded; otherwise choose the configuration to use."
+        },
+        "album_id": {
+          "name": "Album ID",
+          "description": "The Jellyfin music-album item ID."
+        }
+      }
+    },
+    "get_artist_tracks": {
+      "name": "Get artist tracks",
+      "description": "Fetches ordered audio tracks for one or more Jellyfin artist IDs using the native read-only client.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Configuration",
+          "description": "Optional when exactly one Jellyfin Media Assistant configuration is loaded; otherwise choose the configuration to use."
+        },
+        "artist_id": {
+          "name": "Artist ID",
+          "description": "One Jellyfin artist ID or a comma-separated set of physical artist IDs."
+        }
+      }
+    },
+    "queue_get": {
+      "name": "Get media queue",
+      "description": "Retrieves the current queue state from the configured Jellyfin Assist queue service.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Configuration",
+          "description": "Optional when exactly one Jellyfin Media Assistant configuration is loaded; otherwise choose the configuration to use."
+        },
+        "media_player": {
+          "name": "Media player",
+          "description": "The media_player entity whose Jellyfin Assist queue should be used."
+        }
+      }
+    },
+    "queue_add": {
+      "name": "Add to media queue",
+      "description": "Adds one normalized media item to the configured Jellyfin Assist queue service.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Configuration",
+          "description": "Optional when exactly one Jellyfin Media Assistant configuration is loaded; otherwise choose the configuration to use."
+        },
+        "media_player": {
+          "name": "Media player",
+          "description": "The media_player entity whose Jellyfin Assist queue should be used."
+        },
+        "id": {
+          "name": "Item ID",
+          "description": "The Jellyfin item ID to add."
+        },
+        "name": {
+          "name": "Name",
+          "description": "Display name for the queued item."
+        },
+        "type": {
+          "name": "Type",
+          "description": "Jellyfin media type."
+        },
+        "artist": {
+          "name": "Artist",
+          "description": "Optional artist metadata."
+        },
+        "album": {
+          "name": "Album",
+          "description": "Optional album metadata."
+        },
+        "series": {
+          "name": "Series",
+          "description": "Optional series metadata."
+        },
+        "season": {
+          "name": "Season",
+          "description": "Optional season number."
+        },
+        "episode": {
+          "name": "Episode",
+          "description": "Optional episode number."
+        }
+      }
+    },
+    "queue_next": {
+      "name": "Advance media queue",
+      "description": "Advances the configured Jellyfin Assist queue to the next item.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Configuration",
+          "description": "Optional when exactly one Jellyfin Media Assistant configuration is loaded; otherwise choose the configuration to use."
+        },
+        "media_player": {
+          "name": "Media player",
+          "description": "The media_player entity whose Jellyfin Assist queue should be used."
+        }
+      }
+    },
+    "queue_clear": {
+      "name": "Clear media queue",
+      "description": "Clears the queue for one media player.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Configuration",
+          "description": "Optional when exactly one Jellyfin Media Assistant configuration is loaded; otherwise choose the configuration to use."
+        },
+        "media_player": {
+          "name": "Media player",
+          "description": "The media_player entity whose Jellyfin Assist queue should be used."
+        }
+      }
+    },
+    "queue_shuffle": {
+      "name": "Shuffle media queue",
+      "description": "Shuffles upcoming items for one media player.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Configuration",
+          "description": "Optional when exactly one Jellyfin Media Assistant configuration is loaded; otherwise choose the configuration to use."
+        },
+        "media_player": {
+          "name": "Media player",
+          "description": "The media_player entity whose Jellyfin Assist queue should be used."
+        }
+      }
+    },
+    "queue_set_repeat": {
+      "name": "Set queue repeat modes",
+      "description": "Updates Repeat Item and Repeat Queue for one media player.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Configuration",
+          "description": "Optional when exactly one Jellyfin Media Assistant configuration is loaded; otherwise choose the configuration to use."
+        },
+        "media_player": {
+          "name": "Media player",
+          "description": "The media_player entity whose Jellyfin Assist queue should be used."
+        },
+        "repeat_item": {
+          "name": "Repeat item",
+          "description": "Whether Repeat Item should be enabled."
+        },
+        "repeat_queue": {
+          "name": "Repeat queue",
+          "description": "Whether Repeat Queue should be enabled."
+        }
+      }
+    },
+    "queue_command": {
+      "name": "Run queue command",
+      "description": "Resolves a media player and executes a high-level Jellyfin Media Assistant queue command.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Configuration",
+          "description": "Optional when exactly one Jellyfin Media Assistant configuration is loaded."
+        },
+        "operation": {
+          "name": "Operation",
+          "description": "The high-level queue operation to run."
+        },
+        "media_player": {
+          "name": "Media player",
+          "description": "Optional entity ID, Home Assistant name, or alias; the configured default is used when omitted."
+        },
+        "media_player_name": {
+          "name": "Media player display name",
+          "description": "Optional response-label override used when resuming a pending request."
+        }
+      }
+    },
+    "media_orchestrator": {
+      "name": "Request media",
+      "description": "Resolves a Jellyfin media request, manages its queue, and plays or adds the resulting playback plan.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Configuration",
+          "description": "Optional when exactly one Jellyfin Media Assistant configuration is loaded."
+        },
+        "query": {
+          "name": "Media query",
+          "description": "Movie, show, episode, song, album, artist, or other media to resolve."
+        },
+        "media_player": {
+          "name": "Media player",
+          "description": "Optional entity ID, Home Assistant name, or alias; the configured default is used when omitted."
+        },
+        "media_player_name": {
+          "name": "Media player display name",
+          "description": "Optional response-label override."
+        },
+        "operation": {
+          "name": "Operation",
+          "description": "Play the request now or add it to the existing queue."
+        },
+        "media_type": {
+          "name": "Media type",
+          "description": "Optional Jellyfin media type used to narrow the request."
+        },
+        "artist": {
+          "name": "Artist",
+          "description": "Optional artist context for music matching."
+        },
+        "year": {
+          "name": "Year",
+          "description": "Optional production year used to disambiguate results."
+        },
+        "series": {
+          "name": "Series",
+          "description": "Optional parent-series context for episode matching."
+        },
+        "season": {
+          "name": "Season",
+          "description": "Optional TV season number."
+        },
+        "episode": {
+          "name": "Episode",
+          "description": "Optional TV episode number."
+        }
+      }
+    },
+    "play_pending_media": {
+      "name": "Select pending media result",
+      "description": "Selects one numbered result from the current Jellyfin Media Assistant multi-match request.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Configuration",
+          "description": "Optional when exactly one Jellyfin Media Assistant configuration is loaded."
+        },
+        "selection": {
+          "name": "Selection",
+          "description": "The numbered pending result to play or add."
+        }
+      }
+    },
+    "resume_pending_media_request": {
+      "name": "Resume pending media request",
+      "description": "Resumes a Jellyfin Media Assistant request that is waiting for a media-player choice.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Configuration",
+          "description": "Optional when exactly one Jellyfin Media Assistant configuration is loaded."
+        },
+        "media_player": {
+          "name": "Media player",
+          "description": "The spoken media-player name, alias, or entity ID to use."
+        }
+      }
+    },
+    "repair_voice_sentences": {
+      "name": "Repair voice sentences",
+      "description": "Installs or repairs the Jellyfin Media Assistant custom Assist sentence file. User-modified managed sentences are preserved unless overwrite is explicitly enabled.",
+      "fields": {
+        "overwrite_user_modified": {
+          "name": "Overwrite user-modified sentences",
+          "description": "Replace the installed Jellyfin Media Assistant sentence file even when it appears to have been edited after installation."
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Playback Targets and Queue Service",
+        "description": "Choose the default and additional playback targets used by Jellyfin Media Assistant.",
+        "data": {
+          "default_media_player": "Default Media Player",
+          "playback_targets": "Playback Targets"
+        },
+        "data_description": {
+          "default_media_player": "Used when a playback or queue request does not name a media player. The default is always included as an allowed playback target.",
+          "playback_targets": "Select additional supported playback targets. Configuring additional targets enables conservative typo matching and prevents unrelated media_player entities from being selected."
+        }
+      }
+    }
+  },
+  "issues": {
+    "voice_sentences_user_modified": {
+      "title": "Jellyfin Media Assistant voice sentences were modified",
+      "description": "The managed Jellyfin Media Assistant custom sentence file differs from the version last installed by the integration. Your file was left unchanged. Keep your custom version, or run **Jellyfin Media Assistant: Repair voice sentences** with overwrite enabled to restore the packaged version."
+    },
+    "voice_sentences_install_failed": {
+      "title": "Jellyfin Media Assistant could not install voice sentences",
+      "description": "Jellyfin Media Assistant could not create or update its managed custom sentence file. Check the Home Assistant log and configuration-directory permissions, then run **Jellyfin Media Assistant: Repair voice sentences**."
+    }
+  }
+}

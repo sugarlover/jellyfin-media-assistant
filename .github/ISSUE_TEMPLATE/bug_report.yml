@@ -1,0 +1,67 @@
+name: Bug report
+description: Report a reproducible Jellyfin Media Assistant problem.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing Jellyfin Media Assistant. Do not post Jellyfin API keys, access tokens, or unredacted secrets.
+  - type: input
+    id: ha_version
+    attributes:
+      label: Home Assistant version
+      placeholder: 2026.7.2
+    validations:
+      required: true
+  - type: input
+    id: jellyfin_version
+    attributes:
+      label: Jellyfin version
+      placeholder: 10.11.11
+    validations:
+      required: true
+  - type: dropdown
+    id: playback_platform
+    attributes:
+      label: Playback platform
+      options:
+        - Chromecast
+        - Other / experimental
+        - Not playback-related
+    validations:
+      required: true
+  - type: textarea
+    id: request
+    attributes:
+      label: Request or action
+      description: Include the exact Assist phrase or Developer Tools action when relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the response/error and whether playback or queue state actually changed.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostics or relevant logs
+      description: Jellyfin Media Assistant diagnostics redact the API key. Review any logs before posting.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I verified that this report does not contain a Jellyfin API key or other secret.
+          required: true
