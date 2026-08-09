@@ -22,7 +22,6 @@ from custom_components.jellyfin_assist import (
     _normalize_playback_targets,
     async_migrate_entry,
     async_remove_entry,
-    async_setup,
     async_setup_entry,
     async_unload_entry,
 )
@@ -86,13 +85,6 @@ def connection_info() -> JellyfinConnectionInfo:
     )
 
 
-def test_async_setup_registers_search_action(tmp_path: Path) -> None:
-    hass = FakeHass(tmp_path)
-
-    assert run(async_setup(hass, {})) is True
-    assert ("jellyfin_assist", "search") in hass.services.registered
-
-
 def test_setup_entry_loads_configured_default_media_player(
     tmp_path: Path,
     monkeypatch: Any,
@@ -141,6 +133,7 @@ def test_setup_entry_loads_configured_default_media_player(
     )
     assert len(entry.unload_callbacks) == 1
     assert entry.state_cache_clear_count == 1
+    assert ("jellyfin_assist", "search") in hass.services.registered
 
 
 

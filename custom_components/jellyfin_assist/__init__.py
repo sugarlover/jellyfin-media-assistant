@@ -32,15 +32,6 @@ from .search import (
 _LOGGER = logging.getLogger(__name__)
 
 
-async def async_setup(hass: Any, config: Any) -> bool:
-    """Register integration-level actions."""
-
-    from .services import async_register_services
-
-    await async_register_services(hass)
-    return True
-
-
 def _cache_path(hass: Any, entry_id: str) -> Path:
     """Return one private metadata-cache path inside Home Assistant storage."""
 
@@ -186,6 +177,10 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
     # the next frontend/API read to recalculate options support.
     entry.clear_state_cache()
 
+    from .services import async_register_services
+
+    await async_register_services(hass)
+
     return True
 
 
@@ -247,7 +242,6 @@ __all__ = [
     "_normalize_playback_targets",
     "async_migrate_entry",
     "async_remove_entry",
-    "async_setup",
     "async_setup_entry",
     "async_unload_entry",
 ]

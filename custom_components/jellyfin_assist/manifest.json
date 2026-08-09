@@ -1,6 +1,9 @@
 {
   "domain": "jellyfin_assist",
   "name": "Jellyfin Media Assistant",
+  "after_dependencies": [
+    "conversation"
+  ],
   "codeowners": [
     "@sugarlover"
   ],
@@ -8,13 +11,10 @@
   "dependencies": [
     "cast"
   ],
-  "after_dependencies": [
-    "conversation"
-  ],
   "documentation": "https://github.com/sugarlover/jellyfin-media-assistant#readme",
-  "issue_tracker": "https://github.com/sugarlover/jellyfin-media-assistant/issues",
   "integration_type": "service",
   "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/sugarlover/jellyfin-media-assistant/issues",
   "requirements": [],
   "version": "0.1.0-beta.1"
 }
