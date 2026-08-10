@@ -8,7 +8,7 @@
 
 Jellyfin Media Assistant is a Home Assistant custom integration that lets Home Assistant Assist search a Jellyfin library, play media on Chromecast targets, and manage persistent per-player queues with natural-language commands.
 
-> **Public beta:** `0.1.0-beta.1` is available for public testing. Chromecast is the tested and supported playback platform. Other Home Assistant media players are experimental and may not work correctly yet.
+> **Public beta:** `0.1.0-beta.2` is available for public testing. Chromecast is the tested and supported playback platform. Other Home Assistant media players are experimental and may not work correctly yet.
 
 Jellyfin Media Assistant is an independent community project and is not affiliated with or endorsed by the Jellyfin project or Nabu Casa/Home Assistant.
 
@@ -195,4 +195,4 @@ Portions of the native Jellyfin implementation were adapted from JellyHA under i
 
 ## Release status
 
-The first public beta, `0.1.0-beta.1`, is now available. See [CHANGELOG.md](CHANGELOG.md) for release contents and [Known Limitations](docs/known-limitations.md) for current boundaries.
+The current public beta, `0.1.0-beta.2`, is now available. See [CHANGELOG.md](CHANGELOG.md) for release contents and [Known Limitations](docs/known-limitations.md) for current boundaries.

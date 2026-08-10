@@ -18,7 +18,7 @@ def test_manifest_is_loadable_custom_integration() -> None:
     assert manifest["domain"] == "jellyfin_assist"
     assert manifest["config_flow"] is True
     assert manifest["integration_type"] == "service"
-    assert manifest["version"] == "0.1.0-beta.1"
+    assert manifest["version"] == "0.1.0-beta.2"
     assert manifest["dependencies"] == ["cast"]
     assert manifest["documentation"] == "https://github.com/sugarlover/jellyfin-media-assistant#readme"
     assert manifest["issue_tracker"] == "https://github.com/sugarlover/jellyfin-media-assistant/issues"

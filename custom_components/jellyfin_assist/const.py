@@ -6,7 +6,7 @@ from typing import Final
 
 DOMAIN: Final = "jellyfin_assist"
 NAME: Final = "Jellyfin Media Assistant"
-VERSION: Final = "0.1.0-beta.1"
+VERSION: Final = "0.1.0-beta.2"
 
 CONF_SERVER_URL: Final = "server_url"
 CONF_API_KEY: Final = "api_key"

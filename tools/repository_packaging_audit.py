@@ -8,7 +8,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 INTEGRATION = ROOT / "custom_components" / "jellyfin_assist"
-EXPECTED_VERSION = "0.1.0-beta.1"
+EXPECTED_VERSION = "0.1.0-beta.2"
 
 
 def _failures() -> list[str]:

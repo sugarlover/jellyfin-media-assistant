@@ -4,7 +4,17 @@ All notable changes to Jellyfin Media Assistant will be documented here.
 
 The project uses semantic versioning for public releases.
 
-## [0.1.0-beta.1] - 2026-08-10
+## [0.1.0-beta.2] - 2026-08-10
+
+Second public beta release.
+
+### Changed
+
+- Improved first-time setup wording to explain catalog indexing and playback-target configuration.
+- Corrected README branding/release-status wording and introductory typos.
+- Added a direct link to the JellyHA repository in the project acknowledgment.
+
+## [0.1.0-beta.1] - 2026-08-09
 
 First public beta release.
 

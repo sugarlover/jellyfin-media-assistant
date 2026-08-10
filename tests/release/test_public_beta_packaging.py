@@ -15,9 +15,9 @@ INTEGRATION = ROOT / "custom_components" / "jellyfin_assist"
 def test_public_beta_version_is_consistent() -> None:
     manifest = json.loads((INTEGRATION / "manifest.json").read_text(encoding="utf-8"))
 
-    assert VERSION == "0.1.0-beta.1"
+    assert VERSION == "0.1.0-beta.2"
     assert manifest["version"] == VERSION
-    assert "0.1.0-beta.1" in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert "0.1.0-beta.2" in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
 
 def test_manifest_has_hacs_required_repository_metadata() -> None:
