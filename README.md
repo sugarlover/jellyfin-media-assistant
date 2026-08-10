@@ -18,7 +18,7 @@ I don't curretnly have AI with my Home Assistant and I wanted to be able to cont
 
 I started by creating a robust seach that could handle common speech-to-text and swipe issues. During that proccess the project just kept getting bigger so I decided to make it a standalone integration. My goal was to make the integration handle natural(ish) speech with just the use of Assist, no AI. See the documentation for more details and command examples.
 
-I am grateful to zupancicmarko their work and inspiration! Back to AI typing.
+I am grateful to zupancicmarko for their work on [JellyHA](https://github.com/zupancicmarko/JellyHA) and for the inspiration! Back to AI typing.
 
 ## AI-assisted development
 
