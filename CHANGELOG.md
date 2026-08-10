@@ -4,9 +4,9 @@ All notable changes to Jellyfin Media Assistant will be documented here.
 
 The project uses semantic versioning for public releases.
 
-## [0.1.0-beta.1] - 2026-08-09
+## [0.1.0-beta.1] - 2026-08-10
 
-First public beta candidate.
+First public beta release.
 
 ### Added
 

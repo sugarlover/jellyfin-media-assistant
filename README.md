@@ -14,9 +14,9 @@ Jellyfin Media Assistant is an independent community project and is not affiliat
 
 ## Why I built this
 
-I don't curretnly have AI with my Home Assistant and I wanted to be able to control all my media by Assist. I installed the JellyHA integration and made some custom sentences and intents. I use my phone's speech-to-text inside Assist and that caused issues with Jellyfin's search - It's too literal. If I spoke a number it would be spelled out, then the Jellyfin search would return nothing. If I missed a hypen or a single letter was off, the search would be empty.
+I don't currently have AI with my Home Assistant and I wanted to be able to control all my media by Assist. I installed the JellyHA integration and made some custom sentences and intents. I use my phone's speech-to-text inside Assist and that caused issues with Jellyfin's search - It's too literal. If I spoke a number it would be spelled out, then the Jellyfin search would return nothing. If I missed a hyphen or a single letter was off, the search would be empty.
 
-I started by creating a robust seach that could handle common speech-to-text and swipe issues. During that proccess the project just kept getting bigger so I decided to make it a standalone integration. My goal was to make the integration handle natural(ish) speech with just the use of Assist, no AI. See the documentation for more details and command examples.
+I started by creating a robust search that could handle common speech-to-text and swipe issues. During that process the project just kept getting bigger so I decided to make it a standalone integration. My goal was to make the integration handle natural(ish) speech with just the use of Assist, no AI. See the documentation for more details and command examples.
 
 I am grateful to zupancicmarko for their work on [JellyHA](https://github.com/zupancicmarko/JellyHA) and for the inspiration! Back to AI typing.
 
