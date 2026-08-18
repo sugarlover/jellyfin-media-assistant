@@ -94,10 +94,12 @@ intents:
   JellyfinAssistQueueRepeatQueueEnable:
     data:
       - sentences:
-          - "repeat [the] queue on {media_player_request}"
+          - "repeat [the] (queue|cue) on {media_player_request}"
+          - "repeat this (queue|cue) on {media_player_request}"
           - "turn on (repeat queue|queue repeat) on {media_player_request}"
           - "loop [the] queue on {media_player_request}"
-          - "repeat [the] queue"
+          - "repeat [the] (queue|cue)"
+          - "repeat this (queue|cue)"
           - "turn on (repeat queue|queue repeat)"
           - "loop [the] queue"
 
