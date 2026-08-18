@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from .api import JellyfinApiClient, JellyfinConnectionInfo
@@ -32,6 +32,7 @@ class JellyfinAssistRuntime:
     last_player_resolution: dict[str, Any] | None = None
     queue_advancement_targets: tuple[str, ...] = ()
     last_queue_advancement: dict[str, Any] | None = None
+    playback_sessions: dict[str, dict[str, Any]] = field(default_factory=dict)
     voice_sentence_provisioning: "VoiceSentenceState | None" = None
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -11,6 +12,7 @@ import pytest
 from custom_components.jellyfin_assist.playback import (
     NoNextUpEpisodeError,
     PreparedPlaybackItem,
+    async_play_on_chromecast,
     async_prepare_playback_item,
     build_play_media_data,
     playback_mode,
@@ -25,12 +27,20 @@ class FakePlaybackClient:
     server_url = "http://jellyfin.local:8096"
     api_key = "secret-token"
 
-    def __init__(self, item: dict[str, Any], next_up: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        item: dict[str, Any],
+        next_up: dict[str, Any] | None = None,
+    ) -> None:
         self.item = item
         self.next_up = next_up
         self.calls: list[tuple[str, str, str]] = []
 
-    async def async_get_item(self, user_id: str, item_id: str) -> dict[str, Any]:
+    async def async_get_item(
+        self,
+        user_id: str,
+        item_id: str,
+    ) -> dict[str, Any]:
         self.calls.append(("get_item", user_id, item_id))
         return dict(self.item)
 
@@ -42,30 +52,98 @@ class FakePlaybackClient:
         self.calls.append(("next_up", user_id, series_id))
         return dict(self.next_up) if self.next_up is not None else None
 
-    def get_image_url(self, item_id: str, image_type: str = "Primary") -> str:
+    def get_image_url(
+        self,
+        item_id: str,
+        image_type: str = "Primary",
+    ) -> str:
         return (
             f"{self.server_url}/Items/{item_id}/Images/{image_type}"
             f"?maxHeight=300&quality=90&api_key={self.api_key}"
         )
 
 
+class FakePlaybackStates:
+    def __init__(self, state: Any) -> None:
+        self.state = state
+
+    def get(self, entity_id: str) -> Any:
+        return self.state
+
+
+class FakePlaybackServices:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, dict[str, Any], bool]] = []
+
+    async def async_call(
+        self,
+        domain: str,
+        service: str,
+        data: dict[str, Any],
+        *,
+        blocking: bool,
+    ) -> None:
+        self.calls.append(
+            (
+                domain,
+                service,
+                dict(data),
+                blocking,
+            )
+        )
+
+
+class FakePlaybackHass:
+    def __init__(self, state: Any) -> None:
+        self.states = FakePlaybackStates(state)
+        self.services = FakePlaybackServices()
+
+    async def async_add_executor_job(
+        self,
+        func: Any,
+        *args: Any,
+    ) -> Any:
+        return func(*args)
+
+
 def runtime_for(client: FakePlaybackClient) -> Any:
-    return SimpleNamespace(client=client, user_id="USER-1")
+    return SimpleNamespace(
+        client=client,
+        user_id="USER-1",
+        playback_sessions={},
+    )
 
 
 def test_prepare_movie_uses_native_item_without_next_up() -> None:
-    client = FakePlaybackClient({"Id": "movie-1", "Name": "Movie", "Type": "Movie"})
+    client = FakePlaybackClient(
+        {
+            "Id": "movie-1",
+            "Name": "Movie",
+            "Type": "Movie",
+        }
+    )
 
-    prepared = run(async_prepare_playback_item(runtime_for(client), "movie-1"))
+    prepared = run(
+        async_prepare_playback_item(
+            runtime_for(client),
+            "movie-1",
+        )
+    )
 
     assert prepared.item_id == "movie-1"
     assert prepared.resolved_from_type is None
-    assert client.calls == [("get_item", "USER-1", "movie-1")]
+    assert client.calls == [
+        ("get_item", "USER-1", "movie-1"),
+    ]
 
 
 def test_prepare_series_resolves_native_next_up_episode() -> None:
     client = FakePlaybackClient(
-        {"Id": "series-1", "Name": "Series", "Type": "Series"},
+        {
+            "Id": "series-1",
+            "Name": "Series",
+            "Type": "Series",
+        },
         {
             "Id": "episode-7",
             "Name": "Episode Seven",
@@ -74,7 +152,12 @@ def test_prepare_series_resolves_native_next_up_episode() -> None:
         },
     )
 
-    prepared = run(async_prepare_playback_item(runtime_for(client), "series-1"))
+    prepared = run(
+        async_prepare_playback_item(
+            runtime_for(client),
+            "series-1",
+        )
+    )
 
     assert prepared.item_id == "episode-7"
     assert prepared.item_type == "Episode"
@@ -93,29 +176,55 @@ def test_prepare_season_uses_series_id_for_next_up() -> None:
             "Type": "Season",
             "SeriesId": "series-1",
         },
-        {"Id": "episode-8", "Name": "Episode Eight", "Type": "Episode"},
+        {
+            "Id": "episode-8",
+            "Name": "Episode Eight",
+            "Type": "Episode",
+        },
     )
 
-    prepared = run(async_prepare_playback_item(runtime_for(client), "season-2"))
+    prepared = run(
+        async_prepare_playback_item(
+            runtime_for(client),
+            "season-2",
+        )
+    )
 
     assert prepared.item_id == "episode-8"
     assert prepared.resolved_from_type == "Season"
-    assert client.calls[-1] == ("next_up", "USER-1", "series-1")
+    assert client.calls[-1] == (
+        "next_up",
+        "USER-1",
+        "series-1",
+    )
 
 
 def test_prepare_series_with_no_next_up_surfaces_clear_failure() -> None:
     client = FakePlaybackClient(
-        {"Id": "series-1", "Name": "Series", "Type": "Series"},
+        {
+            "Id": "series-1",
+            "Name": "Series",
+            "Type": "Series",
+        },
         None,
     )
 
-    with pytest.raises(NoNextUpEpisodeError, match="No Next Up episode"):
-        run(async_prepare_playback_item(runtime_for(client), "series-1"))
+    with pytest.raises(
+        NoNextUpEpisodeError,
+        match="No Next Up episode",
+    ):
+        run(
+            async_prepare_playback_item(
+                runtime_for(client),
+                "series-1",
+            )
+        )
 
 
 def test_episode_play_media_payload_preserves_jellyha_metadata_contract() -> None:
     client = FakePlaybackClient({})
     runtime = runtime_for(client)
+
     prepared = PreparedPlaybackItem(
         requested_item_id="episode-1",
         item_id="episode-1",
@@ -128,8 +237,18 @@ def test_episode_play_media_payload_preserves_jellyha_metadata_contract() -> Non
             "IndexNumber": 3,
             "Container": "mkv",
             "MediaStreams": [
-                {"Type": "Video", "Codec": "h264", "Height": 1080, "BitDepth": 8},
-                {"Type": "Audio", "Index": 1, "Codec": "aac", "Channels": 2},
+                {
+                    "Type": "Video",
+                    "Codec": "h264",
+                    "Height": 1080,
+                    "BitDepth": 8,
+                },
+                {
+                    "Type": "Audio",
+                    "Index": 1,
+                    "Codec": "aac",
+                    "Channels": 2,
+                },
             ],
         },
     )
@@ -152,8 +271,11 @@ def test_episode_play_media_payload_preserves_jellyha_metadata_contract() -> Non
         "title": "Pilot",
         "images": [
             {
-                "url": "http://jellyfin.local:8096/Items/episode-1/Images/Primary"
-                "?maxHeight=300&quality=90&api_key=secret-token"
+                "url": (
+                    "http://jellyfin.local:8096/Items/"
+                    "episode-1/Images/Primary"
+                    "?maxHeight=300&quality=90&api_key=secret-token"
+                )
             }
         ],
         "metadataType": 1,
@@ -162,3 +284,123 @@ def test_episode_play_media_payload_preserves_jellyha_metadata_contract() -> Non
         "episode": 3,
     }
     assert playback_mode(playback_info) == "direct_play"
+
+
+def test_successful_playback_creates_fresh_tracking_session(
+    monkeypatch: Any,
+) -> None:
+    """Successful playback records the concrete Jellyfin item and runtime."""
+
+    client = FakePlaybackClient({})
+    runtime = runtime_for(client)
+
+    runtime.playback_sessions["media_player.example"] = {
+        "item_id": "old-item",
+        "requested_item_id": "old-item",
+        "duration_seconds": 999.0,
+        "accumulated_playing_seconds": 500.0,
+        "playing_started_at": None,
+    }
+
+    prepared = PreparedPlaybackItem(
+        requested_item_id="series-1",
+        item_id="episode-7",
+        item={
+            "Id": "episode-7",
+            "Name": "Episode Seven",
+            "Type": "Episode",
+            "RunTimeTicks": 1_850_000_000,
+        },
+        resolved_from_type="Series",
+    )
+
+    async def prepare(
+        runtime_arg: Any,
+        item_id: str,
+    ) -> PreparedPlaybackItem:
+        assert runtime_arg is runtime
+        assert item_id == "series-1"
+        return prepared
+
+    monkeypatch.setattr(
+        "custom_components.jellyfin_assist.playback.async_prepare_playback_item",
+        prepare,
+    )
+
+    monkeypatch.setattr(
+        "custom_components.jellyfin_assist.playback."
+        "ChromecastPlaybackStrategy.discover_chromecast_model",
+        lambda hass, target: (
+            "Home Assistant Voice",
+            False,
+        ),
+    )
+
+    monkeypatch.setattr(
+        "custom_components.jellyfin_assist.playback.build_play_media_data",
+        lambda runtime_arg, target, prepared_arg, model: (
+            {
+                "entity_id": target,
+                "media_content_id": (
+                    "http://jellyfin.local:8096/"
+                    "Audio/episode-7/stream"
+                ),
+                "media_content_type": "audio/mpeg",
+            },
+            {
+                "media_url": (
+                    "http://jellyfin.local:8096/"
+                    "Audio/episode-7/stream"
+                ),
+                "content_type": "audio/mpeg",
+            },
+        ),
+    )
+
+    hass = FakePlaybackHass(
+        SimpleNamespace(
+            entity_id="media_player.example",
+            state="playing",
+            attributes={},
+        )
+    )
+
+    result = run(
+        async_play_on_chromecast(
+            hass,
+            runtime,
+            target_entity_id="media_player.example",
+            item_id="series-1",
+        )
+    )
+
+    assert hass.services.calls == [
+        (
+            "media_player",
+            "play_media",
+            {
+                "entity_id": "media_player.example",
+                "media_content_id": (
+                    "http://jellyfin.local:8096/"
+                    "Audio/episode-7/stream"
+                ),
+                "media_content_type": "audio/mpeg",
+            },
+            True,
+        )
+    ]
+
+    session = runtime.playback_sessions["media_player.example"]
+
+    assert session["item_id"] == "episode-7"
+    assert session["requested_item_id"] == "series-1"
+    assert session["duration_seconds"] == 185.0
+    assert session["accumulated_playing_seconds"] == 0.0
+    assert isinstance(session["playing_started_at"], datetime)
+    assert session["playing_started_at"].tzinfo is not None
+
+    assert result["success"] is True
+    assert result["status"] == "playing"
+    assert result["requested_item_id"] == "series-1"
+    assert result["item_id"] == "episode-7"
+    assert result["resolved_from_type"] == "Series"
