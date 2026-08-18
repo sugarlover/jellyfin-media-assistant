@@ -34,19 +34,81 @@ def test_queue_sentences_capture_raw_player_text_and_cover_natural_status_phrase
     intents = sentence_data["intents"]
     status_sentences = intents["JellyfinAssistQueueStatus"]["data"][0]["sentences"]
 
-    assert "what is [the] queue status on {media_player_request}" in status_sentences
-    assert "what is [the] queue status" in status_sentences
-    assert any("{media_player_request}" in sentence for sentence in status_sentences)
-    assert not any("{media_player}" in sentence for sentence in status_sentences)
+    assert (
+        "what is [the] (queue|cue) status on {media_player_request}"
+        in status_sentences
+    )
+    assert "what is [the] (queue|cue) status" in status_sentences
+    assert any(
+        "{media_player_request}" in sentence
+        for sentence in status_sentences
+    )
+    assert not any(
+        "{media_player}" in sentence
+        for sentence in status_sentences
+    )
 
 
-def test_repeat_queue_sentences_cover_natural_and_stt_variants() -> None:
+def test_queue_control_sentences_cover_queue_cue_stt_variants() -> None:
     sentence_data = yaml.safe_load(SENTENCES.read_text(encoding="utf-8"))
     intents = sentence_data["intents"]
+
+    next_sentences = (
+        intents["JellyfinAssistQueueNext"]["data"][0]["sentences"]
+    )
+    assert (
+        "advance [the] (queue|cue) on {media_player_request}"
+        in next_sentences
+    )
+    assert "advance [the] (queue|cue)" in next_sentences
+
+    status_sentences = (
+        intents["JellyfinAssistQueueStatus"]["data"][0]["sentences"]
+    )
+    assert "(queue|cue) status on {media_player_request}" in status_sentences
+    assert (
+        "what is [the] (queue|cue) status on {media_player_request}"
+        in status_sentences
+    )
+    assert (
+        "what's in [the] (queue|cue) on {media_player_request}"
+        in status_sentences
+    )
+    assert (
+        "how many items are in [the] (queue|cue) on {media_player_request}"
+        in status_sentences
+    )
+    assert "(queue|cue) status" in status_sentences
+    assert "what is in [the] (queue|cue)" in status_sentences
+
+    clear_sentences = (
+        intents["JellyfinAssistQueueClear"]["data"][0]["sentences"]
+    )
+    assert (
+        "(clear|empty) [the] (queue|cue) (on|for) {media_player_request}"
+        in clear_sentences
+    )
+    assert (
+        "(clear|empty) {media_player_request} (queue|cue)"
+        in clear_sentences
+    )
+    assert all(
+        "{media_player_request}" in sentence
+        for sentence in clear_sentences
+    )
+
+    shuffle_sentences = (
+        intents["JellyfinAssistQueueShuffle"]["data"][0]["sentences"]
+    )
+    assert (
+        "(shuffle|randomize) [the] (queue|cue) on {media_player_request}"
+        in shuffle_sentences
+    )
+    assert "(shuffle|randomize) [the] (queue|cue)" in shuffle_sentences
+
     repeat_sentences = (
         intents["JellyfinAssistQueueRepeatQueueEnable"]["data"][0]["sentences"]
     )
-
     assert (
         "repeat [the] (queue|cue) on {media_player_request}"
         in repeat_sentences
@@ -55,8 +117,36 @@ def test_repeat_queue_sentences_cover_natural_and_stt_variants() -> None:
         "repeat this (queue|cue) on {media_player_request}"
         in repeat_sentences
     )
+    assert (
+        "turn on (repeat queue|repeat cue|queue repeat|cue repeat) "
+        "on {media_player_request}"
+        in repeat_sentences
+    )
+    assert (
+        "loop [the] (queue|cue) on {media_player_request}"
+        in repeat_sentences
+    )
     assert "repeat [the] (queue|cue)" in repeat_sentences
     assert "repeat this (queue|cue)" in repeat_sentences
+    assert (
+        "turn on (repeat queue|repeat cue|queue repeat|cue repeat)"
+        in repeat_sentences
+    )
+    assert "loop [the] (queue|cue)" in repeat_sentences
+
+    toggle_sentences = (
+        intents["JellyfinAssistQueueRepeatQueueToggle"]["data"][0]["sentences"]
+    )
+    assert (
+        "toggle repeat (queue|cue) on {media_player_request}"
+        in toggle_sentences
+    )
+    assert (
+        "toggle (queue|cue) repeat on {media_player_request}"
+        in toggle_sentences
+    )
+    assert "toggle repeat (queue|cue)" in toggle_sentences
+    assert "toggle (queue|cue) repeat" in toggle_sentences
 
 
 def test_all_queue_intents_use_shared_native_player_dispatcher() -> None:

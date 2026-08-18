@@ -14,14 +14,14 @@ intents:
           - "(play|watch|put on|start) [the] next (one|show|episode|movie|song|track) on {media_player_request}"
           - "(skip|go) [to] [the] next [item] on {media_player_request}"
           - "(skip|go) [to] [the] next (one|show|episode|movie|song|track) on {media_player_request}"
-          - "advance [the] queue on {media_player_request}"
+          - "advance [the] (queue|cue) on {media_player_request}"
           - "next [item]"
           - "[the] next (one|show|episode|movie|song|track)"
           - "(play|watch|put on|start) [the] next [item]"
           - "(play|watch|put on|start) [the] next (one|show|episode|movie|song|track)"
           - "(skip|go) [to] [the] next [item]"
           - "(skip|go) [to] [the] next (one|show|episode|movie|song|track)"
-          - "advance [the] queue"
+          - "advance [the] (queue|cue)"
 
 
   JellyfinAssistQueueWhatsPlaying:
@@ -49,34 +49,34 @@ intents:
   JellyfinAssistQueueStatus:
     data:
       - sentences:
-          - "queue status on {media_player_request}"
-          - "what is [the] queue status on {media_player_request}"
-          - "what's [the] queue status on {media_player_request}"
-          - "what is in [the] queue on {media_player_request}"
-          - "what's in [the] queue on {media_player_request}"
-          - "how many items are in [the] queue on {media_player_request}"
-          - "queue status"
-          - "what is [the] queue status"
-          - "what's [the] queue status"
-          - "what is in [the] queue"
-          - "what's in [the] queue"
-          - "how many items are in [the] queue"
+          - "(queue|cue) status on {media_player_request}"
+          - "what is [the] (queue|cue) status on {media_player_request}"
+          - "what's [the] (queue|cue) status on {media_player_request}"
+          - "what is in [the] (queue|cue) on {media_player_request}"
+          - "what's in [the] (queue|cue) on {media_player_request}"
+          - "how many items are in [the] (queue|cue) on {media_player_request}"
+          - "(queue|cue) status"
+          - "what is [the] (queue|cue) status"
+          - "what's [the] (queue|cue) status"
+          - "what is in [the] (queue|cue)"
+          - "what's in [the] (queue|cue)"
+          - "how many items are in [the] (queue|cue)"
 
 
   JellyfinAssistQueueClear:
     data:
       - sentences:
           # Clearing is destructive, so a player must always be spoken.
-          - "(clear|empty) [the] queue (on|for) {media_player_request}"
-          - "(clear|empty) {media_player_request} queue"
+          - "(clear|empty) [the] (queue|cue) (on|for) {media_player_request}"
+          - "(clear|empty) {media_player_request} (queue|cue)"
 
 
   JellyfinAssistQueueShuffle:
     data:
       - sentences:
-          - "(shuffle|randomize) [the] queue on {media_player_request}"
+          - "(shuffle|randomize) [the] (queue|cue) on {media_player_request}"
           - "(shuffle|randomize) [the] upcoming items on {media_player_request}"
-          - "(shuffle|randomize) [the] queue"
+          - "(shuffle|randomize) [the] (queue|cue)"
           - "(shuffle|randomize) [the] upcoming items"
 
 
@@ -96,12 +96,12 @@ intents:
       - sentences:
           - "repeat [the] (queue|cue) on {media_player_request}"
           - "repeat this (queue|cue) on {media_player_request}"
-          - "turn on (repeat queue|queue repeat) on {media_player_request}"
-          - "loop [the] queue on {media_player_request}"
+          - "turn on (repeat queue|repeat cue|queue repeat|cue repeat) on {media_player_request}"
+          - "loop [the] (queue|cue) on {media_player_request}"
           - "repeat [the] (queue|cue)"
           - "repeat this (queue|cue)"
-          - "turn on (repeat queue|queue repeat)"
-          - "loop [the] queue"
+          - "turn on (repeat queue|repeat cue|queue repeat|cue repeat)"
+          - "loop [the] (queue|cue)"
 
 
   JellyfinAssistQueueRepeatOff:
@@ -129,10 +129,10 @@ intents:
   JellyfinAssistQueueRepeatQueueToggle:
     data:
       - sentences:
-          - "toggle repeat queue on {media_player_request}"
-          - "toggle queue repeat on {media_player_request}"
-          - "toggle repeat queue"
-          - "toggle queue repeat"
+          - "toggle repeat (queue|cue) on {media_player_request}"
+          - "toggle (queue|cue) repeat on {media_player_request}"
+          - "toggle repeat (queue|cue)"
+          - "toggle (queue|cue) repeat"
 
 
   JellyfinAssistMusicAlbumPlay:
