@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - "feature/**"
+      - "fix/**"
       - "release/**"
   pull_request:
 
@@ -32,3 +33,4 @@ jobs:
 
       - name: Run tests
         run: python -m pytest
+        
