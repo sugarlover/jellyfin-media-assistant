@@ -32,6 +32,7 @@ class DeterministicMatchMethod(StrEnum):
     STYLIZED_NUMBER_ALIAS = "stylized_number_alias"
     COMPACT_SPACING = "compact_spacing"
     TITLE_FRAGMENT = "title_fragment"
+    ARTICLE_OMISSION_FRAGMENT = "article_omission_fragment"
 
 
 # These are deliberately centralized and conservative. They establish ordering
@@ -46,6 +47,7 @@ _METHOD_SCORES: dict[DeterministicMatchMethod, int] = {
     DeterministicMatchMethod.STYLIZED_NUMBER_ALIAS: 90,
     DeterministicMatchMethod.COMPACT_SPACING: 88,
     DeterministicMatchMethod.TITLE_FRAGMENT: 76,
+    DeterministicMatchMethod.ARTICLE_OMISSION_FRAGMENT: 74,
 }
 
 _VARIANT_RISK: dict[VariantMethod, DeterministicMatchMethod] = {
@@ -230,6 +232,40 @@ def _contains_token_sequence(
     )
 
 
+_OMISSIBLE_ARTICLES = frozenset({"a", "an", "the"})
+
+
+def _contains_token_sequence_with_one_internal_article_omission(
+    candidate_tokens: tuple[str, ...],
+    query_tokens: tuple[str, ...],
+) -> tuple[str, ...] | None:
+    """Return the matched candidate span when one internal article is omitted.
+
+    This is intentionally narrower than stop-word removal. The candidate may
+    contain exactly one additional ``a``, ``an``, or ``the`` inside the matched
+    span, and every other token must match the query exactly and in order. The
+    omitted article must have matched tokens on both sides, so ``Thing`` does
+    not become equivalent to ``The Thing`` merely because the catalog contains
+    no exact ``Thing`` title.
+    """
+
+    if len(query_tokens) < 3:
+        return None
+
+    span_width = len(query_tokens) + 1
+    if span_width > len(candidate_tokens):
+        return None
+
+    for start in range(len(candidate_tokens) - span_width + 1):
+        span = candidate_tokens[start : start + span_width]
+        for omitted_index in range(1, len(span) - 1):
+            if span[omitted_index] not in _OMISSIBLE_ARTICLES:
+                continue
+            if span[:omitted_index] + span[omitted_index + 1 :] == query_tokens:
+                return span
+    return None
+
+
 def classify_title_fragment_match(
     query: str,
     candidate_title: str,
@@ -282,6 +318,88 @@ def classify_title_fragment_match(
         matches, key=lambda item: item[:2]
     )
     method = DeterministicMatchMethod.TITLE_FRAGMENT
+    return DeterministicTitleMatch(
+        query=query_profile.original,
+        candidate_title=candidate_profile.original,
+        method=method,
+        score=score_for_method(method),
+        shared_value=shared_value,
+        query_methods=query_methods,
+        candidate_methods=candidate_methods,
+    )
+
+
+def classify_article_omission_fragment_match(
+    query: str,
+    candidate_title: str,
+) -> DeterministicTitleMatch | None:
+    """Return a conservative fragment match with one omitted internal article.
+
+    The normal title-fragment classifier remains stronger and should be tried
+    first. This fallback exists for speech-to-text omissions such as
+    ``The Anatomy of tongue in cheek`` versus
+    ``The Anatomy of the Tongue In Cheek (Gold Edition)``. It does not remove
+    articles globally and does not permit missing content words, reordered
+    words, or leading/trailing article differences.
+    """
+
+    query_profile = build_text_profile(query)
+    candidate_profile = build_text_profile(candidate_title)
+    matches: list[
+        tuple[
+            int,
+            int,
+            str,
+            tuple[VariantMethod, ...],
+            tuple[VariantMethod, ...],
+        ]
+    ] = []
+
+    for query_variant in query_profile.variants:
+        if query_variant.methods == (VariantMethod.COMPACT_SPACING,):
+            continue
+        query_tokens = _fragment_tokens(query_variant.value)
+        if sum(len(token) for token in query_tokens) < 3:
+            continue
+        if sum(token not in _OMISSIBLE_ARTICLES for token in query_tokens) < 2:
+            continue
+
+        for candidate_variant in candidate_profile.variants:
+            if candidate_variant.methods == (VariantMethod.COMPACT_SPACING,):
+                continue
+            candidate_tokens = _fragment_tokens(candidate_variant.value)
+            span = _contains_token_sequence_with_one_internal_article_omission(
+                candidate_tokens,
+                query_tokens,
+            )
+            if span is None:
+                continue
+
+            query_strength = score_for_method(_best_side_method(query_variant.methods))
+            candidate_strength = score_for_method(
+                _best_side_method(candidate_variant.methods)
+            )
+            matches.append(
+                (
+                    min(query_strength, candidate_strength),
+                    candidate_strength,
+                    " ".join(span),
+                    query_variant.methods,
+                    candidate_variant.methods,
+                )
+            )
+
+    if not matches:
+        return None
+
+    (
+        _pair_strength,
+        _candidate_strength,
+        shared_value,
+        query_methods,
+        candidate_methods,
+    ) = max(matches, key=lambda item: item[:2])
+    method = DeterministicMatchMethod.ARTICLE_OMISSION_FRAGMENT
     return DeterministicTitleMatch(
         query=query_profile.original,
         candidate_title=candidate_profile.original,

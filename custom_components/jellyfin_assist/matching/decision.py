@@ -85,6 +85,10 @@ _METHOD_THRESHOLDS: dict[DeterministicMatchMethod, ConfidenceThreshold] = {
         minimum_total_score=76,
         minimum_margin=10,
     ),
+    DeterministicMatchMethod.ARTICLE_OMISSION_FRAGMENT: ConfidenceThreshold(
+        minimum_total_score=74,
+        minimum_margin=12,
+    ),
 }
 
 

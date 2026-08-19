@@ -30,6 +30,7 @@ from .decision import MatchDecisionStatus, threshold_for_method
 from .deterministic import (
     DeterministicMatchMethod,
     DeterministicTitleMatch,
+    classify_article_omission_fragment_match,
     classify_deterministic_match,
     classify_title_fragment_match,
     score_for_method,
@@ -330,6 +331,20 @@ def classify_lexical_match(
             deterministic=fragment,
         )
 
+    article_omission = classify_article_omission_fragment_match(
+        query,
+        candidate_title,
+    )
+    if article_omission is not None:
+        return UnifiedTitleMatch(
+            query=query,
+            candidate_title=candidate_title,
+            family=LexicalMatchFamily.DETERMINISTIC,
+            method=article_omission.method,
+            lexical_score=article_omission.score,
+            deterministic=article_omission,
+        )
+
     fuzzy = classify_fuzzy_match(query, candidate_title)
     if fuzzy is not None:
         return UnifiedTitleMatch(
@@ -490,9 +505,54 @@ def rank_search_candidates(
             rejected=tuple(deterministic_rejected + fragment_rejected),
         )
 
+    article_omission_candidates: list[
+        tuple[int, MediaCandidate, UnifiedTitleMatch]
+    ] = []
+    fuzzy_after_article_omission: list[tuple[int, MediaCandidate]] = []
+    for catalog_index, candidate in fuzzy_after_fragment:
+        article_omission = classify_article_omission_fragment_match(
+            query,
+            candidate.title,
+        )
+        if article_omission is None:
+            fuzzy_after_article_omission.append((catalog_index, candidate))
+            continue
+        article_omission_candidates.append(
+            (
+                catalog_index,
+                candidate,
+                UnifiedTitleMatch(
+                    query=query,
+                    candidate_title=candidate.title,
+                    family=LexicalMatchFamily.DETERMINISTIC,
+                    method=article_omission.method,
+                    lexical_score=article_omission.score,
+                    deterministic=article_omission,
+                ),
+            )
+        )
+
+    article_omission_ranked, article_omission_rejected = _rank_family(
+        query,
+        article_omission_candidates,
+        active_context,
+    )
+    if article_omission_ranked:
+        return SearchRanking(
+            query=query,
+            context=active_context,
+            active_family=LexicalMatchFamily.DETERMINISTIC,
+            matches=tuple(item[1] for item in article_omission_ranked),
+            rejected=tuple(
+                deterministic_rejected
+                + fragment_rejected
+                + article_omission_rejected
+            ),
+        )
+
     fuzzy_candidates: list[tuple[int, MediaCandidate, UnifiedTitleMatch]] = []
     phonetic_eligible: list[tuple[int, MediaCandidate]] = []
-    for catalog_index, candidate in fuzzy_after_fragment:
+    for catalog_index, candidate in fuzzy_after_article_omission:
         fuzzy = classify_fuzzy_match(query, candidate.title)
         if fuzzy is None:
             phonetic_eligible.append((catalog_index, candidate))
@@ -524,7 +584,10 @@ def rank_search_candidates(
             active_family=LexicalMatchFamily.FUZZY,
             matches=tuple(item[1] for item in fuzzy_ranked),
             rejected=tuple(
-                deterministic_rejected + fragment_rejected + fuzzy_rejected
+                deterministic_rejected
+                + fragment_rejected
+                + article_omission_rejected
+                + fuzzy_rejected
             ),
         )
 
@@ -562,6 +625,7 @@ def rank_search_candidates(
         rejected=tuple(
             deterministic_rejected
             + fragment_rejected
+            + article_omission_rejected
             + fuzzy_rejected
             + phonetic_rejected
         ),
