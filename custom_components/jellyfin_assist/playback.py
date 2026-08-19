@@ -9,6 +9,7 @@ dependency; retained attribution and source provenance live under
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from .playback_strategy import ChromecastPlaybackStrategy
@@ -49,9 +50,13 @@ async def async_prepare_playback_item(
     if not requested_item_id:
         raise ValueError("Jellyfin item ID is required")
 
-    raw_item = await runtime.client.async_get_item(runtime.user_id, requested_item_id)
+    raw_item = await runtime.client.async_get_item(
+        runtime.user_id,
+        requested_item_id,
+    )
     if not isinstance(raw_item, Mapping):
         raise ChromecastPlaybackError("Jellyfin item response was not an object")
+
     item = dict(raw_item)
     item_type = str(item.get("Type") or "")
 
@@ -68,14 +73,17 @@ async def async_prepare_playback_item(
             )
             if next_episode is None:
                 raise NoNextUpEpisodeError(
-                    f"No Next Up episode is available for Jellyfin {item_type.lower()} {requested_item_id}."
+                    f"No Next Up episode is available for Jellyfin "
+                    f"{item_type.lower()} {requested_item_id}."
                 )
+
             item = dict(next_episode)
             resolved_item_id = str(item.get("Id") or "").strip()
             if not resolved_item_id:
                 raise ChromecastPlaybackError(
                     "Jellyfin Next Up response did not include an item ID"
                 )
+
             return PreparedPlaybackItem(
                 requested_item_id=requested_item_id,
                 item_id=resolved_item_id,
@@ -119,6 +127,7 @@ def build_play_media_data(
             }
         ],
     }
+
     if prepared.item_type == "Episode":
         metadata.update(
             {
@@ -140,8 +149,8 @@ def build_play_media_data(
             "metadata": metadata,
         },
     }
-    return service_data, playback_info
 
+    return service_data, playback_info
 
 
 async def async_play_on_chromecast(
@@ -155,29 +164,67 @@ async def async_play_on_chromecast(
 
     normalized_target = str(target_entity_id or "").strip()
     normalized_item_id = str(item_id or "").strip()
+
     if not normalized_target.startswith("media_player."):
         raise ValueError("Choose a Home Assistant media_player entity.")
+
     if not normalized_item_id:
         raise ValueError("Jellyfin item ID is required")
 
-    prepared = await async_prepare_playback_item(runtime, normalized_item_id)
+    prepared = await async_prepare_playback_item(
+        runtime,
+        normalized_item_id,
+    )
+
     model_name, is_legacy = await hass.async_add_executor_job(
         ChromecastPlaybackStrategy.discover_chromecast_model,
         hass,
         normalized_target,
     )
+
     service_data, playback_info = build_play_media_data(
         runtime,
         normalized_target,
         prepared,
         model_name,
     )
+
     await hass.services.async_call(
         "media_player",
         "play_media",
         service_data,
         blocking=True,
     )
+
+    run_time_ticks = prepared.item.get("RunTimeTicks")
+    try:
+        duration_seconds = max(
+            float(run_time_ticks or 0) / 10_000_000,
+            0.0,
+        )
+    except (TypeError, ValueError):
+        duration_seconds = 0.0
+
+    current_state = (
+        hass.states.get(normalized_target)
+        if getattr(hass, "states", None)
+        else None
+    )
+
+    playing_started_at = (
+        datetime.now(timezone.utc)
+        if getattr(current_state, "state", None) == "playing"
+        else None
+    )
+
+    runtime.playback_sessions[normalized_target] = {
+        "item_id": prepared.item_id,
+        "requested_item_id": prepared.requested_item_id,
+        "duration_seconds": duration_seconds,
+        "accumulated_playing_seconds": 0.0,
+        "playing_started_at": playing_started_at,
+    }
+
     return {
         "success": True,
         "status": "playing",
@@ -192,6 +239,7 @@ async def async_play_on_chromecast(
         "playback_mode": playback_mode(playback_info),
         "media_content_type": playback_info["content_type"],
     }
+
 
 def playback_mode(playback_info: Mapping[str, str]) -> str:
     """Return a non-secret diagnostic label for the chosen playback path."""

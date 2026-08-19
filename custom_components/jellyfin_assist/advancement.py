@@ -12,8 +12,8 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import DOMAIN
-from .queue_store import QueueStoreError
 from .media_actions import async_play_item
+from .queue_store import QueueStoreError
 from .runtime import JellyfinAssistRuntime
 
 _LOGGER = logging.getLogger(__name__)
@@ -39,7 +39,9 @@ def _timestamp(value: Any) -> float:
             return float(normalized)
         except ValueError:
             try:
-                return datetime.fromisoformat(normalized.replace("Z", "+00:00")).timestamp()
+                return datetime.fromisoformat(
+                    normalized.replace("Z", "+00:00")
+                ).timestamp()
             except ValueError:
                 return 0.0
     return 0.0
@@ -66,7 +68,9 @@ def _estimate_playback_percent(old_state: Any, new_state: Any) -> float:
     position_reference_timestamp = (
         updated_at if position_sample_is_current else playing_started_at
     )
-    position_reference_value = reported_position if position_sample_is_current else 0.0
+    position_reference_value = (
+        reported_position if position_sample_is_current else 0.0
+    )
     elapsed_since_reference = (
         max(idle_started_at - position_reference_timestamp, 0.0)
         if idle_started_at > 0 and position_reference_timestamp > 0
@@ -79,7 +83,11 @@ def _estimate_playback_percent(old_state: Any, new_state: Any) -> float:
     )
     extrapolated_position = position_reference_value + elapsed_since_reference
     estimated_position = min(
-        max(reported_position, extrapolated_position, continuous_playing_seconds),
+        max(
+            reported_position,
+            extrapolated_position,
+            continuous_playing_seconds,
+        ),
         duration,
     )
     return round(estimated_position / duration * 100, 2)
@@ -94,6 +102,70 @@ def _extract_jellyfin_id(content_id: Any) -> str:
     return match.group(1) if match else ""
 
 
+def _update_playback_session(
+    runtime: JellyfinAssistRuntime,
+    *,
+    player: str,
+    old_state: Any,
+    new_state: Any,
+) -> None:
+    """Accumulate actual playing time for one Jellyfin-started playback session."""
+
+    session = runtime.playback_sessions.get(player)
+    if session is None:
+        return
+
+    old_player_state = getattr(old_state, "state", None)
+    new_player_state = getattr(new_state, "state", None)
+    transition_at = _timestamp(getattr(new_state, "last_changed", None))
+
+    if old_player_state == "playing":
+        started_at = _timestamp(session.get("playing_started_at"))
+        if started_at <= 0:
+            started_at = _timestamp(
+                getattr(old_state, "last_changed", None)
+            )
+
+        accumulated = float(
+            session.get("accumulated_playing_seconds") or 0.0
+        )
+        if started_at > 0 and transition_at > 0:
+            accumulated += max(transition_at - started_at, 0.0)
+
+        session["accumulated_playing_seconds"] = accumulated
+        session["playing_started_at"] = None
+
+    if new_player_state == "playing":
+        session["playing_started_at"] = getattr(
+            new_state,
+            "last_changed",
+            None,
+        )
+
+
+def _session_playback_percent(
+    session: Mapping[str, Any] | None,
+) -> float:
+    """Estimate completion from Jellyfin runtime and tracked playing time."""
+
+    if not isinstance(session, Mapping):
+        return 0.0
+
+    try:
+        duration = float(session.get("duration_seconds") or 0.0)
+        accumulated = float(
+            session.get("accumulated_playing_seconds") or 0.0
+        )
+    except (TypeError, ValueError):
+        return 0.0
+
+    if duration <= 0:
+        return 0.0
+
+    played = min(max(accumulated, 0.0), duration)
+    return round(played / duration * 100, 2)
+
+
 async def _async_notify_failure(
     hass: HomeAssistant,
     *,
@@ -106,11 +178,16 @@ async def _async_notify_failure(
         await hass.services.async_call(
             "persistent_notification",
             "create",
-            {"title": title, "message": message},
+            {
+                "title": title,
+                "message": message,
+            },
             blocking=False,
         )
-    except Exception:  # pragma: no cover - notification failure must not break playback
-        _LOGGER.exception("Could not create Jellyfin Assist failure notification")
+    except Exception:
+        _LOGGER.exception(
+            "Could not create Jellyfin Assist failure notification"
+        )
 
 
 async def _async_process_completion(
@@ -130,8 +207,23 @@ async def _async_process_completion(
     attrs = getattr(old_state, "attributes", {}) or {}
     player_name = attrs.get("friendly_name") or player
     previous_title = attrs.get("media_title") or "Unknown"
-    playback_percent = _estimate_playback_percent(old_state, new_state)
-    jellyfin_id = _extract_jellyfin_id(attrs.get("media_content_id"))
+    playback_percent = _estimate_playback_percent(
+        old_state,
+        new_state,
+    )
+    jellyfin_id = _extract_jellyfin_id(
+        attrs.get("media_content_id")
+    )
+
+    playback_session = runtime.playback_sessions.get(player)
+    session_playback_percent = _session_playback_percent(
+        playback_session
+    )
+    session_item_id = (
+        str(playback_session.get("item_id") or "")
+        if isinstance(playback_session, Mapping)
+        else ""
+    )
 
     try:
         queue_response = await queue_client.async_get(player)
@@ -140,7 +232,13 @@ async def _async_process_completion(
             "player": player,
             "status": "queue_read_failed",
             "error": str(err),
+            "session_playback_percent": session_playback_percent,
+            "session_item_id": session_item_id,
         }
+
+        if runtime.playback_sessions.get(player) is playback_session:
+            runtime.playback_sessions.pop(player, None)
+
         await _async_notify_failure(
             hass,
             title="Jellyfin Assist Queue Read - FAILED",
@@ -163,9 +261,13 @@ async def _async_process_completion(
     )
     queue_success = bool(queue_body.get("success", False))
     current = queue_body.get("current")
-    current_id = str(current.get("id", "")) if isinstance(current, Mapping) else ""
+    current_id = (
+        str(current.get("id", ""))
+        if isinstance(current, Mapping)
+        else ""
+    )
 
-    completion_confirmed = (
+    metadata_completion_confirmed = (
         playback_percent >= COMPLETION_THRESHOLD_PERCENT
         and bool(jellyfin_id)
         and queue_status == 200
@@ -173,14 +275,45 @@ async def _async_process_completion(
         and bool(current_id)
         and jellyfin_id == current_id
     )
+
+    session_completion_confirmed = (
+        playback_percent == 0.0
+        and not jellyfin_id
+        and session_playback_percent >= COMPLETION_THRESHOLD_PERCENT
+        and bool(session_item_id)
+        and queue_status == 200
+        and queue_success
+        and bool(current_id)
+        and session_item_id == current_id
+    )
+
+    completion_confirmed = (
+        metadata_completion_confirmed
+        or session_completion_confirmed
+    )
+
+    completion_method = (
+        "player_metadata"
+        if metadata_completion_confirmed
+        else "tracked_session"
+        if session_completion_confirmed
+        else None
+    )
+
     if not completion_confirmed:
         runtime.last_queue_advancement = {
             "player": player,
             "status": "completion_rejected",
             "playback_percent": playback_percent,
             "jellyfin_id": jellyfin_id,
+            "session_playback_percent": session_playback_percent,
+            "session_item_id": session_item_id,
             "queue_current_id": current_id,
         }
+
+        if runtime.playback_sessions.get(player) is playback_session:
+            runtime.playback_sessions.pop(player, None)
+
         if queue_status != 200 or not queue_success:
             await _async_notify_failure(
                 hass,
@@ -197,6 +330,9 @@ async def _async_process_completion(
             )
         return
 
+    if runtime.playback_sessions.get(player) is playback_session:
+        runtime.playback_sessions.pop(player, None)
+
     try:
         next_response = await queue_client.async_next(player)
     except QueueStoreError as err:
@@ -204,6 +340,7 @@ async def _async_process_completion(
             "player": player,
             "status": "queue_advance_failed",
             "error": str(err),
+            "completion_method": completion_method,
         }
         await _async_notify_failure(
             hass,
@@ -213,7 +350,8 @@ async def _async_process_completion(
                 f"Player: {player_name}\n"
                 f"Completed: {previous_title}\n"
                 f"Error: {err}\n\n"
-                "ACTION TAKEN: Queue advancement failed. No next-item playback was started."
+                "ACTION TAKEN: Queue advancement failed. "
+                "No next-item playback was started."
             ),
         )
         return
@@ -226,7 +364,9 @@ async def _async_process_completion(
     )
     next_success = bool(next_body.get("success", False))
     next_item = next_body.get("current")
-    upcoming_count = int(next_body.get("upcoming_count", 0) or 0)
+    upcoming_count = int(
+        next_body.get("upcoming_count", 0) or 0
+    )
 
     if (
         next_status == 200
@@ -237,7 +377,11 @@ async def _async_process_completion(
         runtime.last_queue_advancement = {
             "player": player,
             "status": "queue_complete",
-            "completed": next_body.get("completed") or next_body.get("finished"),
+            "completed": (
+                next_body.get("completed")
+                or next_body.get("finished")
+            ),
+            "completion_method": completion_method,
         }
         return
 
@@ -252,6 +396,7 @@ async def _async_process_completion(
             "status": "queue_advance_failed",
             "queue_status": next_status,
             "queue_response": next_body,
+            "completion_method": completion_method,
         }
         await _async_notify_failure(
             hass,
@@ -263,12 +408,14 @@ async def _async_process_completion(
                 f"Queue HTTP status: {next_status}\n"
                 f"Queue status: {next_body.get('status', '')}\n"
                 f"Queue response: {next_body}\n\n"
-                "ACTION TAKEN: Queue advancement failed. No next-item playback was started."
+                "ACTION TAKEN: Queue advancement failed. "
+                "No next-item playback was started."
             ),
         )
         return
 
     next_item_dict = dict(next_item)
+
     try:
         playback_result = await async_play_item(
             hass,
@@ -277,17 +424,31 @@ async def _async_process_completion(
             media_player=player,
         )
     except Exception as err:
-        playback_result = {"success": False, "error": str(err)}
+        playback_result = {
+            "success": False,
+            "error": str(err),
+        }
 
-    playback_success = isinstance(playback_result, Mapping) and bool(
-        playback_result.get("success", False)
+    playback_success = (
+        isinstance(playback_result, Mapping)
+        and bool(playback_result.get("success", False))
     )
+
     runtime.last_queue_advancement = {
         "player": player,
-        "status": "playing_next" if playback_success else "playback_failed",
-        "completed": next_body.get("completed") or next_body.get("finished"),
+        "status": (
+            "playing_next"
+            if playback_success
+            else "playback_failed"
+        ),
+        "completed": (
+            next_body.get("completed")
+            or next_body.get("finished")
+        ),
         "current": next_item_dict,
+        "completion_method": completion_method,
     }
+
     if not playback_success:
         await _async_notify_failure(
             hass,
@@ -309,7 +470,7 @@ def async_setup_queue_advancement(
     entry: Any,
     runtime: JellyfinAssistRuntime,
 ) -> None:
-    """Register playing->idle listeners for configured playback targets."""
+    """Register state listeners for configured playback targets."""
 
     targets = tuple(runtime.playback_targets)
     runtime.queue_advancement_targets = targets
@@ -320,15 +481,39 @@ def async_setup_queue_advancement(
     def _async_state_changed(event: Any) -> None:
         old_state = event.data.get("old_state")
         new_state = event.data.get("new_state")
+
         if old_state is None or new_state is None:
             return
-        if getattr(old_state, "state", None) != "playing":
-            return
-        if getattr(new_state, "state", None) != "idle":
-            return
-        player = str(event.data.get("entity_id") or getattr(new_state, "entity_id", ""))
+
+        player = str(
+            event.data.get("entity_id")
+            or getattr(new_state, "entity_id", "")
+        )
         if not player:
             return
+
+        _update_playback_session(
+            runtime,
+            player=player,
+            old_state=old_state,
+            new_state=new_state,
+        )
+
+        new_player_state = getattr(new_state, "state", None)
+
+        if new_player_state in {"off", "unavailable"}:
+            runtime.playback_sessions.pop(player, None)
+            return
+
+        # Preserve the original explicit source-level completion guardrails.
+        if getattr(old_state, "state", None) != "playing":
+            if new_player_state == "idle":
+                runtime.playback_sessions.pop(player, None)
+            return
+
+        if getattr(new_state, "state", None) != "idle":
+            return
+
         entry.async_create_background_task(
             hass,
             _async_process_completion(
@@ -341,7 +526,11 @@ def async_setup_queue_advancement(
             f"{DOMAIN} queue advancement {player}",
         )
 
-    unsubscribe = async_track_state_change_event(hass, list(targets), _async_state_changed)
+    unsubscribe = async_track_state_change_event(
+        hass,
+        list(targets),
+        _async_state_changed,
+    )
     entry.async_on_unload(unsubscribe)
 
 
@@ -349,6 +538,8 @@ __all__ = [
     "COMPLETION_THRESHOLD_PERCENT",
     "_estimate_playback_percent",
     "_extract_jellyfin_id",
+    "_update_playback_session",
+    "_session_playback_percent",
     "_async_process_completion",
     "async_setup_queue_advancement",
 ]

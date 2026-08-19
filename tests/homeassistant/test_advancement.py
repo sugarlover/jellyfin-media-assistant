@@ -8,7 +8,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from tests.homeassistant.ha_stubs import FakeEntry, FakeHass, install_homeassistant_stubs
+from tests.homeassistant.ha_stubs import (
+    FakeEntry,
+    FakeHass,
+    install_homeassistant_stubs,
+)
 
 install_homeassistant_stubs()
 
@@ -16,6 +20,8 @@ from custom_components.jellyfin_assist.advancement import (
     _async_process_completion,
     _estimate_playback_percent,
     _extract_jellyfin_id,
+    _session_playback_percent,
+    _update_playback_session,
     async_setup_queue_advancement,
 )
 from custom_components.jellyfin_assist.runtime import JellyfinAssistRuntime
@@ -26,7 +32,11 @@ def run(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
-def runtime(queue_client: Any, *, targets: tuple[str, ...] = ("media_player.example",)) -> JellyfinAssistRuntime:
+def runtime(
+    queue_client: Any,
+    *,
+    targets: tuple[str, ...] = ("media_player.example",),
+) -> JellyfinAssistRuntime:
     async def loader() -> Any:
         raise AssertionError("not used")
 
@@ -44,10 +54,16 @@ def runtime(queue_client: Any, *, targets: tuple[str, ...] = ("media_player.exam
     )
 
 
-def media_states(*, position: float = 95, duration: float = 100, content_id: str = "/Videos/abc123/") -> tuple[Any, Any]:
+def media_states(
+    *,
+    position: float = 95,
+    duration: float = 100,
+    content_id: str = "/Videos/abc123/",
+) -> tuple[Any, Any]:
     started = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
     updated = started + timedelta(seconds=position)
     ended = started + timedelta(seconds=duration)
+
     old_state = SimpleNamespace(
         entity_id="media_player.example",
         state="playing",
@@ -67,6 +83,36 @@ def media_states(*, position: float = 95, duration: float = 100, content_id: str
         last_changed=ended,
         attributes={},
     )
+
+    return old_state, new_state
+
+
+def metadata_poor_states(
+    *,
+    played_seconds: float = 100,
+) -> tuple[Any, Any]:
+    """Return HAVPE-like states with no playback metadata."""
+
+    started = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
+    ended = started + timedelta(seconds=played_seconds)
+
+    old_state = SimpleNamespace(
+        entity_id="media_player.example",
+        state="playing",
+        last_changed=started,
+        attributes={
+            "friendly_name": "Home Assistant Voice Media Player",
+        },
+    )
+    new_state = SimpleNamespace(
+        entity_id="media_player.example",
+        state="idle",
+        last_changed=ended,
+        attributes={
+            "friendly_name": "Home Assistant Voice Media Player",
+        },
+    )
+
     return old_state, new_state
 
 
@@ -89,19 +135,141 @@ def test_extract_jellyfin_id_accepts_video_and_audio_urls() -> None:
     assert _extract_jellyfin_id("https://example.invalid/nope") == ""
 
 
-def test_setup_tracks_all_configured_playback_targets(tmp_path: Path) -> None:
+def test_session_playback_percent_uses_jellyfin_runtime() -> None:
+    session = {
+        "duration_seconds": 200.0,
+        "accumulated_playing_seconds": 190.0,
+    }
+
+    assert _session_playback_percent(session) == 95.0
+
+
+def test_session_playback_percent_rejects_missing_runtime() -> None:
+    session = {
+        "duration_seconds": 0.0,
+        "accumulated_playing_seconds": 200.0,
+    }
+
+    assert _session_playback_percent(session) == 0.0
+
+
+def test_session_playback_percent_caps_at_one_hundred() -> None:
+    session = {
+        "duration_seconds": 100.0,
+        "accumulated_playing_seconds": 150.0,
+    }
+
+    assert _session_playback_percent(session) == 100.0
+
+
+def test_playback_session_counts_only_actual_playing_time() -> None:
+    rt = runtime(object())
+
+    started = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
+    paused_at = started + timedelta(seconds=60)
+    resumed_at = started + timedelta(seconds=300)
+    ended_at = resumed_at + timedelta(seconds=125)
+
+    rt.playback_sessions["media_player.example"] = {
+        "item_id": "abc123",
+        "requested_item_id": "abc123",
+        "duration_seconds": 185.0,
+        "accumulated_playing_seconds": 0.0,
+        "playing_started_at": started,
+    }
+
+    playing_state = SimpleNamespace(
+        state="playing",
+        last_changed=started,
+        attributes={},
+    )
+    paused_state = SimpleNamespace(
+        state="paused",
+        last_changed=paused_at,
+        attributes={},
+    )
+    resumed_state = SimpleNamespace(
+        state="playing",
+        last_changed=resumed_at,
+        attributes={},
+    )
+    idle_state = SimpleNamespace(
+        state="idle",
+        last_changed=ended_at,
+        attributes={},
+    )
+
+    _update_playback_session(
+        rt,
+        player="media_player.example",
+        old_state=playing_state,
+        new_state=paused_state,
+    )
+
+    assert (
+        rt.playback_sessions["media_player.example"][
+            "accumulated_playing_seconds"
+        ]
+        == 60.0
+    )
+    assert (
+        rt.playback_sessions["media_player.example"]["playing_started_at"]
+        is None
+    )
+
+    _update_playback_session(
+        rt,
+        player="media_player.example",
+        old_state=paused_state,
+        new_state=resumed_state,
+    )
+
+    assert (
+        rt.playback_sessions["media_player.example"]["playing_started_at"]
+        == resumed_at
+    )
+
+    _update_playback_session(
+        rt,
+        player="media_player.example",
+        old_state=resumed_state,
+        new_state=idle_state,
+    )
+
+    session = rt.playback_sessions["media_player.example"]
+
+    assert session["accumulated_playing_seconds"] == 185.0
+    assert session["playing_started_at"] is None
+    assert _session_playback_percent(session) == 100.0
+
+
+def test_setup_tracks_all_configured_playback_targets(
+    tmp_path: Path,
+) -> None:
     hass = FakeHass(tmp_path)
     entry = FakeEntry("entry", {})
-    rt = runtime(object(), targets=("media_player.one", "media_player.two"))
+    rt = runtime(
+        object(),
+        targets=("media_player.one", "media_player.two"),
+    )
 
     async_setup_queue_advancement(hass, entry, rt)
 
-    assert hass.tracked_state_changes[0][0] == ("media_player.one", "media_player.two")
+    assert hass.tracked_state_changes[0][0] == (
+        "media_player.one",
+        "media_player.two",
+    )
     assert len(entry.unload_callbacks) == 1
-    assert rt.queue_advancement_targets == ("media_player.one", "media_player.two")
+    assert rt.queue_advancement_targets == (
+        "media_player.one",
+        "media_player.two",
+    )
 
 
-def test_confirmed_completion_advances_and_starts_next_item(tmp_path: Path, monkeypatch: Any) -> None:
+def test_confirmed_completion_advances_and_starts_next_item(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
     class QueueClient:
         def __init__(self) -> None:
             self.next_calls = 0
@@ -111,7 +279,10 @@ def test_confirmed_completion_advances_and_starts_next_item(tmp_path: Path, monk
                 "status": 200,
                 "content": {
                     "success": True,
-                    "current": {"id": "abc123", "name": "Example Item"},
+                    "current": {
+                        "id": "abc123",
+                        "name": "Example Item",
+                    },
                 },
                 "headers": {},
             }
@@ -122,7 +293,11 @@ def test_confirmed_completion_advances_and_starts_next_item(tmp_path: Path, monk
                 "status": 200,
                 "content": {
                     "success": True,
-                    "current": {"id": "next456", "name": "Next Item", "type": "Audio"},
+                    "current": {
+                        "id": "next456",
+                        "name": "Next Item",
+                        "type": "Audio",
+                    },
                     "upcoming_count": 1,
                     "completed": {"id": "abc123"},
                 },
@@ -137,12 +312,16 @@ def test_confirmed_completion_advances_and_starts_next_item(tmp_path: Path, monk
 
     async def play(*args: Any, **kwargs: Any) -> dict[str, Any]:
         played.append(dict(kwargs))
-        return {"success": True, "status": "playing"}
+        return {
+            "success": True,
+            "status": "playing",
+        }
 
     monkeypatch.setattr(
         "custom_components.jellyfin_assist.advancement.async_play_item",
         play,
     )
+
     old_state, new_state = media_states()
 
     run(
@@ -156,14 +335,29 @@ def test_confirmed_completion_advances_and_starts_next_item(tmp_path: Path, monk
     )
 
     assert queue.next_calls == 1
-    assert played == [{
-        "item": {"id": "next456", "name": "Next Item", "type": "Audio"},
-        "media_player": "media_player.example",
-    }]
+    assert played == [
+        {
+            "item": {
+                "id": "next456",
+                "name": "Next Item",
+                "type": "Audio",
+            },
+            "media_player": "media_player.example",
+        }
+    ]
     assert rt.last_queue_advancement["status"] == "playing_next"
+    assert (
+        rt.last_queue_advancement["completion_method"]
+        == "player_metadata"
+    )
 
 
-def test_rejected_completion_does_not_advance(tmp_path: Path) -> None:
+def test_metadata_poor_player_completion_advances_from_tracked_session(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """HAVPE-like players advance when tracked runtime confirms completion."""
+
     class QueueClient:
         def __init__(self) -> None:
             self.next_calls = 0
@@ -173,7 +367,106 @@ def test_rejected_completion_does_not_advance(tmp_path: Path) -> None:
                 "status": 200,
                 "content": {
                     "success": True,
-                    "current": {"id": "abc123", "name": "Example Item"},
+                    "current": {
+                        "id": "abc123",
+                        "name": "Example Item",
+                    },
+                },
+                "headers": {},
+            }
+
+        async def async_next(self, player: str) -> dict[str, Any]:
+            self.next_calls += 1
+            return {
+                "status": 200,
+                "content": {
+                    "success": True,
+                    "current": {
+                        "id": "next456",
+                        "name": "Next Item",
+                        "type": "Audio",
+                    },
+                    "upcoming_count": 1,
+                    "completed": {"id": "abc123"},
+                },
+                "headers": {},
+            }
+
+    queue = QueueClient()
+    rt = runtime(queue)
+    hass = FakeHass(tmp_path)
+
+    rt.playback_sessions["media_player.example"] = {
+        "item_id": "abc123",
+        "requested_item_id": "abc123",
+        "duration_seconds": 100.0,
+        "accumulated_playing_seconds": 100.0,
+        "playing_started_at": None,
+    }
+
+    played: list[dict[str, Any]] = []
+
+    async def play(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        played.append(dict(kwargs))
+        return {
+            "success": True,
+            "status": "playing",
+        }
+
+    monkeypatch.setattr(
+        "custom_components.jellyfin_assist.advancement.async_play_item",
+        play,
+    )
+
+    old_state, new_state = metadata_poor_states()
+
+    run(
+        _async_process_completion(
+            hass,
+            rt,
+            player="media_player.example",
+            old_state=old_state,
+            new_state=new_state,
+        )
+    )
+
+    assert queue.next_calls == 1
+    assert played == [
+        {
+            "item": {
+                "id": "next456",
+                "name": "Next Item",
+                "type": "Audio",
+            },
+            "media_player": "media_player.example",
+        }
+    ]
+    assert rt.last_queue_advancement["status"] == "playing_next"
+    assert (
+        rt.last_queue_advancement["completion_method"]
+        == "tracked_session"
+    )
+    assert "media_player.example" not in rt.playback_sessions
+
+
+def test_metadata_poor_player_early_stop_does_not_advance(
+    tmp_path: Path,
+) -> None:
+    """Stopping an HAVPE-like player early must remain Stop, not Next."""
+
+    class QueueClient:
+        def __init__(self) -> None:
+            self.next_calls = 0
+
+        async def async_get(self, player: str) -> dict[str, Any]:
+            return {
+                "status": 200,
+                "content": {
+                    "success": True,
+                    "current": {
+                        "id": "abc123",
+                        "name": "Example Item",
+                    },
                 },
                 "headers": {},
             }
@@ -185,8 +478,206 @@ def test_rejected_completion_does_not_advance(tmp_path: Path) -> None:
     queue = QueueClient()
     rt = runtime(queue)
     hass = FakeHass(tmp_path)
-    old_state, new_state = media_states(position=20, duration=100)
-    new_state.last_changed = old_state.last_changed + timedelta(seconds=25)
+
+    rt.playback_sessions["media_player.example"] = {
+        "item_id": "abc123",
+        "requested_item_id": "abc123",
+        "duration_seconds": 100.0,
+        "accumulated_playing_seconds": 25.0,
+        "playing_started_at": None,
+    }
+
+    old_state, new_state = metadata_poor_states(
+        played_seconds=25,
+    )
+
+    run(
+        _async_process_completion(
+            hass,
+            rt,
+            player="media_player.example",
+            old_state=old_state,
+            new_state=new_state,
+        )
+    )
+
+    assert queue.next_calls == 0
+    assert rt.last_queue_advancement["status"] == "completion_rejected"
+    assert (
+        rt.last_queue_advancement["session_playback_percent"]
+        == 25.0
+    )
+    assert (
+        rt.last_queue_advancement["session_item_id"]
+        == "abc123"
+    )
+    assert "media_player.example" not in rt.playback_sessions
+
+
+def test_metadata_poor_player_stale_item_does_not_advance(
+    tmp_path: Path,
+) -> None:
+    """A completed stale session must not advance a different queue item."""
+
+    class QueueClient:
+        def __init__(self) -> None:
+            self.next_calls = 0
+
+        async def async_get(self, player: str) -> dict[str, Any]:
+            return {
+                "status": 200,
+                "content": {
+                    "success": True,
+                    "current": {
+                        "id": "abc123",
+                        "name": "Current Item",
+                    },
+                },
+                "headers": {},
+            }
+
+        async def async_next(self, player: str) -> dict[str, Any]:
+            self.next_calls += 1
+            raise AssertionError("must not advance")
+
+    queue = QueueClient()
+    rt = runtime(queue)
+    hass = FakeHass(tmp_path)
+
+    rt.playback_sessions["media_player.example"] = {
+        "item_id": "stale999",
+        "requested_item_id": "stale999",
+        "duration_seconds": 100.0,
+        "accumulated_playing_seconds": 100.0,
+        "playing_started_at": None,
+    }
+
+    old_state, new_state = metadata_poor_states()
+
+    run(
+        _async_process_completion(
+            hass,
+            rt,
+            player="media_player.example",
+            old_state=old_state,
+            new_state=new_state,
+        )
+    )
+
+    assert queue.next_calls == 0
+    assert rt.last_queue_advancement["status"] == "completion_rejected"
+    assert (
+        rt.last_queue_advancement["session_playback_percent"]
+        == 100.0
+    )
+    assert (
+        rt.last_queue_advancement["session_item_id"]
+        == "stale999"
+    )
+    assert (
+        rt.last_queue_advancement["queue_current_id"]
+        == "abc123"
+    )
+    assert "media_player.example" not in rt.playback_sessions
+
+
+def test_tracked_session_does_not_override_conflicting_player_metadata(
+    tmp_path: Path,
+) -> None:
+    """Fallback must not override metadata that identifies another item."""
+
+    class QueueClient:
+        def __init__(self) -> None:
+            self.next_calls = 0
+
+        async def async_get(self, player: str) -> dict[str, Any]:
+            return {
+                "status": 200,
+                "content": {
+                    "success": True,
+                    "current": {
+                        "id": "abc123",
+                        "name": "Current Item",
+                    },
+                },
+                "headers": {},
+            }
+
+        async def async_next(self, player: str) -> dict[str, Any]:
+            self.next_calls += 1
+            raise AssertionError("must not advance")
+
+    queue = QueueClient()
+    rt = runtime(queue)
+    hass = FakeHass(tmp_path)
+
+    rt.playback_sessions["media_player.example"] = {
+        "item_id": "abc123",
+        "requested_item_id": "abc123",
+        "duration_seconds": 100.0,
+        "accumulated_playing_seconds": 100.0,
+        "playing_started_at": None,
+    }
+
+    old_state, new_state = media_states(
+        position=0,
+        duration=100,
+        content_id="/Audio/wrong999/",
+    )
+    new_state.last_changed = old_state.last_changed
+
+    run(
+        _async_process_completion(
+            hass,
+            rt,
+            player="media_player.example",
+            old_state=old_state,
+            new_state=new_state,
+        )
+    )
+
+    assert queue.next_calls == 0
+    assert rt.last_queue_advancement["status"] == "completion_rejected"
+    assert rt.last_queue_advancement["jellyfin_id"] == "wrong999"
+    assert "media_player.example" not in rt.playback_sessions
+
+
+def test_rejected_completion_does_not_advance(
+    tmp_path: Path,
+) -> None:
+    class QueueClient:
+        def __init__(self) -> None:
+            self.next_calls = 0
+
+        async def async_get(self, player: str) -> dict[str, Any]:
+            return {
+                "status": 200,
+                "content": {
+                    "success": True,
+                    "current": {
+                        "id": "abc123",
+                        "name": "Example Item",
+                    },
+                },
+                "headers": {},
+            }
+
+        async def async_next(self, player: str) -> dict[str, Any]:
+            self.next_calls += 1
+            raise AssertionError("must not advance")
+
+    queue = QueueClient()
+    rt = runtime(queue)
+    hass = FakeHass(tmp_path)
+
+    old_state, new_state = media_states(
+        position=20,
+        duration=100,
+    )
+    new_state.last_changed = (
+        old_state.last_changed
+        + timedelta(seconds=25)
+    )
 
     run(
         _async_process_completion(
@@ -202,12 +693,19 @@ def test_rejected_completion_does_not_advance(tmp_path: Path) -> None:
     assert rt.last_queue_advancement["status"] == "completion_rejected"
 
 
-def test_normal_queue_completion_is_silent(tmp_path: Path) -> None:
+def test_normal_queue_completion_is_silent(
+    tmp_path: Path,
+) -> None:
     class QueueClient:
         async def async_get(self, player: str) -> dict[str, Any]:
             return {
                 "status": 200,
-                "content": {"success": True, "current": {"id": "abc123"}},
+                "content": {
+                    "success": True,
+                    "current": {
+                        "id": "abc123",
+                    },
+                },
                 "headers": {},
             }
 
@@ -218,13 +716,16 @@ def test_normal_queue_completion_is_silent(tmp_path: Path) -> None:
                     "success": True,
                     "current": None,
                     "upcoming_count": 0,
-                    "completed": {"id": "abc123"},
+                    "completed": {
+                        "id": "abc123",
+                    },
                 },
                 "headers": {},
             }
 
     rt = runtime(QueueClient())
     hass = FakeHass(tmp_path)
+
     old_state, new_state = media_states()
 
     run(
@@ -239,3 +740,7 @@ def test_normal_queue_completion_is_silent(tmp_path: Path) -> None:
 
     assert hass.services.calls == []
     assert rt.last_queue_advancement["status"] == "queue_complete"
+    assert (
+        rt.last_queue_advancement["completion_method"]
+        == "player_metadata"
+    )
