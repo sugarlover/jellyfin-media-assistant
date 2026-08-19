@@ -367,6 +367,15 @@ def serialize_search_action_response(
         )
         for index, ranked in enumerate(visible_ranked)
     ]
+    confirmation_detail = None
+    if decision.confirmation_required:
+        confirmation_ranked = decision.alternatives[0]
+        confirmation_detail = _ranked_candidate_to_dict(
+            confirmation_ranked,
+            rank=1,
+            record=records_by_id.get(confirmation_ranked.candidate.key),
+            shortlist_entry=shortlist_by_id.get(confirmation_ranked.candidate.key),
+        )
     items = [detail["item"] for detail in visible_details]
     selected_item = items[0] if decision.automatic_selection_allowed and items else None
     selected_detail = (
@@ -400,6 +409,7 @@ def serialize_search_action_response(
             "reason": decision.reason.value,
             "automatic_selection_allowed": decision.automatic_selection_allowed,
             "selection_required": decision.selection_required,
+            "confirmation_required": decision.confirmation_required,
             "active_family": (
                 decision.active_family.value
                 if decision.active_family is not None
@@ -412,6 +422,7 @@ def serialize_search_action_response(
         },
         "match": selected_detail["match"] if selected_detail else None,
         "alternatives": visible_details if decision.selection_required else [],
+        "confirmation": confirmation_detail,
         "catalog": _catalog_diagnostics_to_dict(managed.diagnostics),
         "diagnostics": {
             "original_query": outcome.query,

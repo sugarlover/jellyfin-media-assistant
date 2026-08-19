@@ -243,6 +243,16 @@ class SearchDecision:
     def selection_required(self) -> bool:
         return self.status is MatchDecisionStatus.AMBIGUOUS
 
+    @property
+    def confirmation_required(self) -> bool:
+        """Return whether one low-confidence candidate needs explicit confirmation."""
+
+        return (
+            self.status is MatchDecisionStatus.CONFIRMATION_REQUIRED
+            and self.selected is None
+            and len(self.alternatives) == 1
+        )
+
 
 def threshold_for_fuzzy_method(method: FuzzyMatchMethod) -> FuzzyConfidenceThreshold:
     """Return the centralized threshold for a fuzzy match method."""
@@ -831,9 +841,14 @@ def decide_search_ranking(ranking: SearchRanking) -> SearchDecision:
 
     if len(ranking.matches) == 1:
         if top.context_score < minimum_single_context_score:
+            status = (
+                MatchDecisionStatus.CONFIRMATION_REQUIRED
+                if top.title_match.is_phonetic
+                else MatchDecisionStatus.NOT_FOUND
+            )
             return _decision(
                 ranking,
-                status=MatchDecisionStatus.NOT_FOUND,
+                status=status,
                 reason=singleton_context_reason,
                 selected=None,
                 alternatives=ranking.matches,

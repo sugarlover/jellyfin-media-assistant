@@ -207,6 +207,16 @@ def _items(response: Mapping[str, Any]) -> list[dict[str, Any]]:
     return [dict(item) for item in raw if isinstance(item, Mapping)]
 
 
+def _confirmation_item(response: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return one explicit confirmation candidate from a search response."""
+
+    confirmation = response.get("confirmation")
+    if not isinstance(confirmation, Mapping):
+        return None
+    item = confirmation.get("item")
+    return dict(item) if isinstance(item, Mapping) else None
+
+
 def _raw_items(response: Mapping[str, Any]) -> list[dict[str, Any]]:
     content = response.get("content")
     raw = content.get("Items", []) if isinstance(content, Mapping) else []
@@ -588,9 +598,12 @@ async def async_resolve_media_intent(
         context=context,
     )
     primary_items = _items(primary)
+    primary_confirmation = _confirmation_item(primary)
     episode_items: list[dict[str, Any]] = []
     audio_items: list[dict[str, Any]] = []
-    if requested_type is None and not primary_items:
+    episode_confirmation: dict[str, Any] | None = None
+    audio_confirmation: dict[str, Any] | None = None
+    if requested_type is None and not primary_items and primary_confirmation is None:
         episode_search = await _search(
             hass,
             runtime,
@@ -602,7 +615,8 @@ async def async_resolve_media_intent(
             context=context,
         )
         episode_items = _items(episode_search)
-        if not episode_items:
+        episode_confirmation = _confirmation_item(episode_search)
+        if not episode_items and episode_confirmation is None:
             audio_search = await _search(
                 hass,
                 runtime,
@@ -614,13 +628,41 @@ async def async_resolve_media_intent(
                 context=context,
             )
             audio_items = _items(audio_search)
+            audio_confirmation = _confirmation_item(audio_search)
 
     search_items = episode_items or audio_items or primary_items
+    confirmation_item = (
+        episode_confirmation or audio_confirmation or primary_confirmation
+    )
     fallback_media_type: str | None = requested_type
     if fallback_media_type is None and episode_items:
         fallback_media_type = "Episode"
     elif fallback_media_type is None and audio_items:
         fallback_media_type = "Audio"
+    elif fallback_media_type is None and episode_confirmation is not None:
+        fallback_media_type = "Episode"
+    elif fallback_media_type is None and audio_confirmation is not None:
+        fallback_media_type = "Audio"
+
+    if not search_items and confirmation_item is not None:
+        description = _pending_direct_description(confirmation_item)
+        message = (
+            f"I found a possible match: {description}. "
+            "Please confirm before playback."
+        )
+        confirmation_media_type = (
+            fallback_media_type or _text(confirmation_item.get("type")) or None
+        )
+        return _base_result(
+            success=False,
+            status="confirmation_required",
+            operation="resolve",
+            intent=confirmation_media_type,
+            query=query,
+            message=message,
+            confirmation=confirmation_item,
+            media_type=confirmation_media_type,
+        )
 
     if not search_items:
         message = f'I could not find anything matching "{query}"'
@@ -1066,6 +1108,39 @@ async def async_media_orchestrator(
         context=context,
     )
     if not resolver.get("success", False):
+        if resolver.get("status") == "confirmation_required":
+            confirmation = resolver.get("confirmation")
+            if isinstance(confirmation, Mapping):
+                pending_item = dict(confirmation)
+                runtime.pending_selection = {
+                    "items": [pending_item],
+                    "media_player": resolved_player,
+                    "operation": requested_operation,
+                    "query": resolver.get("query", query),
+                    "intent": (
+                        resolver.get("intent")
+                        or resolver.get("media_type")
+                        or _text(media_type)
+                    ),
+                }
+                description = _pending_direct_description(pending_item)
+                pending_response = (
+                    f"I found {description}. Did you mean that? "
+                    'Say "select number one" to confirm.'
+                )
+                return _base_result(
+                    success=False,
+                    status="confirmation_required",
+                    operation=requested_operation,
+                    intent=resolver.get("intent"),
+                    query=resolver.get("query", query),
+                    message=pending_response,
+                    item=pending_item,
+                    items=[pending_item],
+                    media_player=resolved_player,
+                    media_type=resolver.get("media_type"),
+                    confirmation=pending_item,
+                )
         if resolver.get("status") in {"multiple_matches", "multiple_series_matches"}:
             pending_items = [dict(item) for item in resolver.get("items", []) if isinstance(item, Mapping)]
             runtime.pending_selection = {

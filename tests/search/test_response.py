@@ -122,6 +122,36 @@ def test_ambiguous_result_returns_ranked_legacy_items(tmp_path: Path) -> None:
     assert [entry["rank"] for entry in response["alternatives"]] == [1, 2]
 
 
+def test_phonetic_singleton_is_exposed_only_as_confirmation_candidate(
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(
+        tmp_path,
+        [song("hailie", "Hailie's Song", "Eminem")],
+        media_type="Audio",
+    )
+    managed = manager.search(
+        "Haley's Song",
+        context=MediaSearchContext(media_type="Audio"),
+    )
+
+    response = serialize_search_action_response(managed)
+
+    assert response["decision"]["status"] == "confirmation_required"
+    assert response["decision"]["confirmation_required"] is True
+    assert response["decision"]["automatic_selection_allowed"] is False
+    assert response["decision"]["selection_required"] is False
+    assert response["items"] == []
+    assert response["item"] is None
+    assert response["selected"] is None
+    assert response["jellyfin_id"] is None
+    assert response["match"] is None
+    assert response["alternatives"] == []
+    assert response["confirmation"]["item"]["id"] == "hailie"
+    assert response["confirmation"]["item"]["name"] == "Hailie's Song"
+    assert response["confirmation"]["match"]["family"] == "phonetic"
+
+
 def test_not_found_preserves_empty_items_contract(tmp_path: Path) -> None:
     manager = build_manager(tmp_path, [movie("bubba", "Bubba Ho-tep")])
     managed = manager.search(

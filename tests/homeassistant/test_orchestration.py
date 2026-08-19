@@ -162,6 +162,47 @@ def test_numbered_episode_resolution_preserves_series_context(tmp_path: Path, mo
     ]
 
 
+def test_resolver_preserves_phonetic_candidate_as_confirmation_only(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    hass = FakeHass(tmp_path)
+    rt = runtime()
+    candidate = {
+        "id": "hailie",
+        "name": "Hailie's Song",
+        "type": "Audio",
+        "artist_name": "Eminem",
+        "album": "The Eminem Show",
+    }
+
+    async def search(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        assert kwargs["media_type"] == "Audio"
+        return {
+            "items": [],
+            "confirmation": {"item": candidate},
+        }
+
+    monkeypatch.setattr(orchestration, "_search", search)
+
+    result = run(
+        async_resolve_media_intent(
+            hass,
+            rt,
+            query="Haley's Song",
+            media_type="Audio",
+        )
+    )
+
+    assert result["success"] is False
+    assert result["status"] == "confirmation_required"
+    assert result["items"] == []
+    assert result["item"] is None
+    assert result["playback_plan"] == []
+    assert result["confirmation"] == candidate
+    assert "Hailie's Song by Eminem" in result["message"]
+
+
 def test_orchestrator_stores_multiple_matches_in_runtime(tmp_path: Path, monkeypatch: Any) -> None:
     hass = FakeHass(
         tmp_path,
@@ -214,6 +255,76 @@ def test_orchestrator_stores_multiple_matches_in_runtime(tmp_path: Path, monkeyp
         "operation": "play",
         "query": "planet",
         "intent": "Movie",
+    }
+
+
+def test_orchestrator_stores_phonetic_confirmation_as_one_pending_selection(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    hass = FakeHass(
+        tmp_path,
+        states=[FakeState("media_player.fredphone", friendly_name="Fred's phone")],
+    )
+    rt = runtime()
+    candidate = {
+        "id": "hailie",
+        "name": "Hailie's Song",
+        "type": "Audio",
+        "artist_name": "Eminem",
+        "album": "The Eminem Show",
+    }
+
+    async def action(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        assert args[2] == "resolve_media_player"
+        return {
+            "success": True,
+            "media_player": "media_player.fredphone",
+            "media_player_name": "Fred's phone",
+            "query": "Haley's Song",
+            "media_type": "Audio",
+        }
+
+    async def resolver(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "success": False,
+            "status": "confirmation_required",
+            "intent": "Audio",
+            "query": "Haley's Song",
+            "media_type": "Audio",
+            "items": [],
+            "confirmation": candidate,
+            "playback_plan": [],
+        }
+
+    monkeypatch.setattr(orchestration, "_action", action)
+    monkeypatch.setattr(orchestration, "async_resolve_media_intent", resolver)
+
+    result = run(
+        async_media_orchestrator(
+            hass,
+            rt,
+            query="Haley's Song",
+            media_player="media_player.fredphone",
+            media_type="Audio",
+        )
+    )
+
+    assert result["success"] is False
+    assert result["status"] == "confirmation_required"
+    assert result["item"] == candidate
+    assert result["items"] == [candidate]
+    assert result["confirmation"] == candidate
+    assert result["message"] == (
+        "I found Hailie's Song by Eminem from The Eminem Show. Did you mean that? "
+        'Say "select number one" to confirm.'
+    )
+    assert rt.pending_selection == {
+        "items": [candidate],
+        "media_player": "media_player.fredphone",
+        "operation": "play",
+        "query": "Haley's Song",
+        "intent": "Audio",
     }
 
 

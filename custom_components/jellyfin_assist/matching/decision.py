@@ -1,8 +1,8 @@
 """Conservative confidence decisions for deterministic media matches.
 
-This module converts a context-ranked candidate list into one of three explicit
+This module converts a context-ranked candidate list into explicit safe-action
 outcomes: a unique automatic match, an ambiguous set that requires selection,
-or no acceptable deterministic match.
+a candidate that requires confirmation, or no acceptable deterministic match.
 
 The decision policy is deliberately isolated from Jellyfin retrieval, Home
 Assistant action registration, playback, and queue handling. Scores are ranking
@@ -25,6 +25,7 @@ class MatchDecisionStatus(StrEnum):
 
     MATCHED = "matched"
     AMBIGUOUS = "ambiguous"
+    CONFIRMATION_REQUIRED = "confirmation_required"
     NOT_FOUND = "not_found"
 
 

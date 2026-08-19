@@ -283,8 +283,79 @@ def test_phonetic_singleton_with_only_media_type_still_needs_context() -> None:
         MediaSearchContext(media_type="Audio"),
     )
 
-    assert decision.status is MatchDecisionStatus.NOT_FOUND
+    assert decision.status is MatchDecisionStatus.CONFIRMATION_REQUIRED
     assert decision.reason is SearchDecisionReason.PHONETIC_SINGLETON_NEEDS_CONTEXT
+    assert decision.confirmation_required is True
+    assert decision.selected is None
+    assert [item.candidate.key for item in decision.alternatives] == ["song"]
+
+
+def test_halie_stt_spelling_requires_confirmation_with_only_media_type() -> None:
+    decision = _decide(
+        "Haley's Song",
+        [
+            MediaCandidate(
+                key="hailie",
+                title="Hailie's Song",
+                media_type="Audio",
+                artist="Eminem",
+            )
+        ],
+        MediaSearchContext(media_type="Audio"),
+    )
+
+    assert decision.status is MatchDecisionStatus.CONFIRMATION_REQUIRED
+    assert decision.reason is SearchDecisionReason.PHONETIC_SINGLETON_NEEDS_CONTEXT
+    assert decision.confirmation_required is True
+    assert decision.selected is None
+    assert decision.alternatives[0].candidate.key == "hailie"
+    assert decision.alternatives[0].title_match.family is LexicalMatchFamily.PHONETIC
+
+
+def test_halie_stt_spelling_auto_selects_with_matching_artist_context() -> None:
+    decision = _decide(
+        "Haley's Song",
+        [
+            MediaCandidate(
+                key="hailie",
+                title="Hailie's Song",
+                media_type="Audio",
+                artist="Eminem",
+            )
+        ],
+        MediaSearchContext(media_type="Audio", artist="Eminem"),
+    )
+
+    assert decision.status is MatchDecisionStatus.MATCHED
+    assert decision.selected is not None
+    assert decision.selected.candidate.key == "hailie"
+    assert decision.selected.title_match.family is LexicalMatchFamily.PHONETIC
+
+
+def test_exact_haley_title_wins_over_hailie_phonetic_candidate() -> None:
+    decision = _decide(
+        "Haley's Song",
+        [
+            MediaCandidate(
+                key="exact",
+                title="Haley's Song",
+                media_type="Audio",
+                artist="Other Artist",
+            ),
+            MediaCandidate(
+                key="hailie",
+                title="Hailie's Song",
+                media_type="Audio",
+                artist="Eminem",
+            ),
+        ],
+        MediaSearchContext(media_type="Audio"),
+    )
+
+    assert decision.status is MatchDecisionStatus.MATCHED
+    assert decision.selected is not None
+    assert decision.selected.candidate.key == "exact"
+    assert decision.selected.title_match.family is LexicalMatchFamily.DETERMINISTIC
 
 
 def test_phonetic_song_can_match_with_artist_and_media_type_context() -> None:
