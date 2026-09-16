@@ -233,3 +233,36 @@ def test_get_items_rejects_invalid_items_payload() -> None:
 
     with pytest.raises(JellyfinInvalidResponseError, match="list of objects"):
         run(client.async_get_items("user-1", include_item_types="Audio"))
+
+
+def test_whole_series_api_query_preserves_episode_metadata() -> None:
+    episodes = [
+        {"Id": "s1e1", "ParentIndexNumber": 1, "IndexNumber": 1},
+        {"Id": "s2e1", "ParentIndexNumber": 2, "IndexNumber": 1},
+    ]
+    session = FakeSession([
+        FakeResponse(200, {"Items": episodes, "TotalRecordCount": 2})
+    ])
+    client = JellyfinApiClient(session, "http://host", "secret")
+
+    result = run(client.async_get_items(
+        "user-1",
+        parent_id="series-1",
+        include_item_types="Episode",
+        recursive=True,
+        sort_by="ParentIndexNumber,IndexNumber",
+        sort_order="Ascending",
+    ))
+
+    assert result["Items"] == episodes
+    assert result["TotalRecordCount"] == 2
+    assert session.calls[0]["url"] == "http://host/Items"
+
+    params = session.calls[0]["params"]
+    assert params["ParentId"] == "series-1"
+    assert params["IncludeItemTypes"] == "Episode"
+    assert params["Recursive"] == "true"
+    assert params["SortBy"] == "ParentIndexNumber,IndexNumber"
+    assert params["SortOrder"] == "Ascending"
+    assert "ParentIndexNumber" not in params
+    assert "IndexNumber" not in params

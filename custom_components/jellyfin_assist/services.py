@@ -72,6 +72,7 @@ from .const import (
     SERVICE_RESUME_MEDIA_REQUEST,
     SERVICE_SEARCH_EPISODE,
     SERVICE_SEARCH_EPISODE_TITLE,
+    SERVICE_SEARCH_SERIES,
     SERVICE_SEARCH_SEASON,
     SERVICE_SEARCH,
 )
@@ -181,6 +182,13 @@ SEARCH_EPISODE_TITLE_SCHEMA = vol.Schema(
         vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
         vol.Required(ATTR_SERIES_ID): cv.string,
         vol.Required(ATTR_EPISODE_TITLE): cv.string,
+    }
+)
+
+SEARCH_SERIES_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_SERIES_ID): cv.string,
     }
 )
 
@@ -838,6 +846,23 @@ async def async_handle_search_episode_title(
     )
 
 
+async def async_handle_search_series(
+    hass: HomeAssistant,
+    call: ServiceCall,
+) -> ServiceResponse:
+    """Fetch all ordered episodes for one Jellyfin series."""
+
+    runtime = _resolve_runtime(hass, call)
+    return await _async_query_items(
+        runtime,
+        parent_id=_clean_text(call.data.get(ATTR_SERIES_ID)),
+        include_item_types="Episode",
+        recursive=True,
+        sort_by="ParentIndexNumber,IndexNumber",
+        sort_order="Ascending",
+    )
+
+
 async def async_handle_get_album_tracks(
     hass: HomeAssistant,
     call: ServiceCall,
@@ -1171,6 +1196,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             SEARCH_EPISODE_TITLE_SCHEMA,
             async_handle_search_episode_title,
         ),
+        (SERVICE_SEARCH_SERIES, SEARCH_SERIES_SCHEMA, async_handle_search_series),
         (SERVICE_GET_ALBUM_TRACKS, GET_ALBUM_TRACKS_SCHEMA, async_handle_get_album_tracks),
         (
             SERVICE_GET_ARTIST_TRACKS,

@@ -222,6 +222,7 @@ def test_registration_is_idempotent(tmp_path: Path) -> None:
         ("jellyfin_assist", "search_episode"),
         ("jellyfin_assist", "search_episode_title"),
         ("jellyfin_assist", "search_season"),
+        ("jellyfin_assist", "search_series"),
     }
 
 
@@ -382,6 +383,17 @@ def test_native_queue_transport_failure_returns_compatible_unavailable_response(
                 "include_item_types": "Episode",
                 "recursive": True,
                 "search_term": "The Pilot",
+                "sort_by": "ParentIndexNumber,IndexNumber",
+                "sort_order": "Ascending",
+            },
+        ),
+        (
+            "search_series",
+            {"series_id": "series-1"},
+            {
+                "parent_id": "series-1",
+                "include_item_types": "Episode",
+                "recursive": True,
                 "sort_by": "ParentIndexNumber,IndexNumber",
                 "sort_order": "Ascending",
             },
@@ -1302,3 +1314,41 @@ def test_repair_voice_sentences_action_installs_managed_file(tmp_path: Path) -> 
         / "en"
         / "jellyfin_assist_media.yaml"
     ).is_file()
+
+
+def test_search_series_preserves_multi_season_metadata(tmp_path: Path) -> None:
+    episodes = [
+        {"Id": "special", "ParentIndexNumber": 0, "IndexNumber": 1},
+        {"Id": "pilot", "ParentIndexNumber": 1, "IndexNumber": 1},
+        {"Id": "s2e1", "ParentIndexNumber": 2, "IndexNumber": 1},
+        {"Id": "s2e2", "ParentIndexNumber": 2, "IndexNumber": 2},
+    ]
+    calls = []
+
+    class Client:
+        async def async_get_items(self, user_id: str, **kwargs):
+            assert user_id == "USER-1"
+            calls.append(kwargs)
+            return {"Items": episodes, "TotalRecordCount": 4}
+
+    entry = FakeEntry("entry-1", {})
+    entry.runtime_data = build_runtime(client=Client())
+    hass = FakeHass(tmp_path, entries=[entry])
+    run(async_register_services(hass))
+
+    response = run(
+        hass.services.registered[("jellyfin_assist", "search_series")][
+            "handler"
+        ](ServiceCall({"config_entry_id": "entry-1", "series_id": "series-1"}))
+    )
+
+    assert response["status"] == 200
+    assert response["content"]["Items"] == episodes
+    assert response["content"]["TotalRecordCount"] == 4
+    assert calls == [{
+        "parent_id": "series-1",
+        "include_item_types": "Episode",
+        "recursive": True,
+        "sort_by": "ParentIndexNumber,IndexNumber",
+        "sort_order": "Ascending",
+    }]

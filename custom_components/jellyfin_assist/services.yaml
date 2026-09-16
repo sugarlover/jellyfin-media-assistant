@@ -156,6 +156,18 @@ resume_media_request:
       required: true
       selector:
         text: {}
+search_series:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    series_id:
+      required: true
+      selector:
+        text: null
+
 search_season:
   fields:
     config_entry_id:
