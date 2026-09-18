@@ -19,11 +19,13 @@ from .const import (
     SERVICE_SEARCH,
     SERVICE_SEARCH_EPISODE,
     SERVICE_SEARCH_SEASON,
+    SERVICE_SEARCH_SERIES,
 )
 from .item_lookup import async_get_native_item
 from .media_actions import async_play_item, async_prepare_play_session, async_queue_add_item
 from .queue_control import async_queue_command
 from .runtime import JellyfinAssistRuntime
+from .series_selection import select_generic_series_episodes
 
 _PLAYABLE_ITEM_TYPES = frozenset({"Movie", "Episode", "Audio", "MusicVideo", "Video"})
 _CONTAINER_ITEM_TYPES = frozenset({"series", "musicalbum", "musicartist"})
@@ -701,6 +703,79 @@ async def async_resolve_media_intent(
     selected_name = _text(selected.get("name")) or query
 
     if selected_type_key == "series":
+        if requested_season is None and requested_episode is None:
+            response = await _action(
+                hass,
+                runtime,
+                SERVICE_SEARCH_SERIES,
+                {"series_id": selected_id},
+                context=context,
+            )
+            status = int(response.get("status", 0) or 0)
+            if status != 200:
+                message = f"I found {selected_name}, but I could not retrieve its episode list from Jellyfin."
+                return _base_result(
+                    success=False,
+                    status="series_lookup_failed",
+                    operation="resolve",
+                    intent="Series",
+                    query=query,
+                    message=message,
+                    jellyfin_id=selected_id,
+                    item=selected,
+                    items=search_items,
+                    media_type="Series",
+                )
+            series_items = _raw_items(response)
+            selected_rows = select_generic_series_episodes(series_items)
+            if not selected_rows:
+                message = f"I found {selected_name}, but no playable episodes are available in Jellyfin."
+                return _base_result(
+                    success=False,
+                    status="series_empty",
+                    operation="resolve",
+                    intent="Series",
+                    query=query,
+                    message=message,
+                    jellyfin_id=selected_id,
+                    item=selected,
+                    items=search_items,
+                    media_type="Series",
+                )
+            plan = [
+                _series_episode_item(
+                    raw,
+                    series_name=selected_name,
+                    series_id=selected_id,
+                    default_season=1,
+                )
+                for raw in selected_rows
+            ]
+            start_season = int(plan[0]["season"])
+            plan_seasons = {int(item["season"]) for item in plan}
+            if len(plan_seasons) == 1:
+                message = f"Found {selected_name}. Season {start_season} contains {len(plan)} episodes."
+            else:
+                last_season = max(plan_seasons)
+                message = (
+                    f"Found {selected_name}. I selected {len(plan)} episodes "
+                    f"spanning Season {start_season} through Season {last_season}."
+                )
+            return _base_result(
+                success=True,
+                status="resolved",
+                operation="resolve",
+                intent="Series",
+                query=query,
+                message=message,
+                jellyfin_id=selected_id,
+                item=selected,
+                items=search_items,
+                playback_plan=plan,
+                media_type="Series",
+                season=start_season,
+            )
+
         resolved_season = requested_season or 1
         response = await _action(
             hass,

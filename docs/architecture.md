@@ -135,7 +135,8 @@ flowchart TD
 
 The resolver may turn one logical result into several playable items:
 
-- **Series/season:** retrieve the selected season's episodes.
+- **Generic series (no season specified):** retrieve the whole-series episode list, then select regular episodes using the series-selection policy. Use all of Season 1 when it has at least 15 episodes; otherwise top up in season/episode order to 15. If Season 1 is absent, start from the earliest regular season. Exclude specials and return a no-playable-episodes failure when no regular episodes are available.
+- **Explicit season:** retrieve all available episodes within the requested season, without topping up from another season.
 - **Specific season+episode:** resolve the series, season, then exact episode.
 - **Episode title:** combine episode-title search with optional parent-series context.
 - **Music album:** retrieve album tracks.

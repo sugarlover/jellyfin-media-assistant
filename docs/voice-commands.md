@@ -54,7 +54,7 @@ Play season 3 of the show Parks and Recreation on the living room TV
 Queue season 2 of the series Frasier on the bedroom TV
 ```
 
-When a show is requested without a season, the current beta queues **Season 1**. Use an explicit season when you want another season.
+When a show is requested without a season, Jellyfin selects the available regular episodes from Season 1. If Season 1 has 15 or more episodes, all of them are selected. If it has fewer, episodes from later regular seasons are added in order, up to 15 total. If Season 1 is absent, selection starts with the earliest regular season, up to 15 episodes. If fewer than 15 regular episodes exist in the series, all are selected. Specials are excluded. To play only a particular season, specify it explicitly; its available episodes are selected without topping up from other seasons.
 
 ### Season and episode number
 
