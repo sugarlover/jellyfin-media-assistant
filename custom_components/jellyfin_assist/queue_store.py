@@ -319,6 +319,9 @@ class NativeQueueStore:
 
             finished = dict(state["queue"][state["current_index"]])
             state["last_completed"] = finished
+            # Under repeat_item the finished item is set as `current` but intentionally NOT appended
+            # to `history`, so `completed_count` never reaches `total` and `queue_status` never
+            # reports `complete` — by design, the item loops indefinitely until the user advances.
             if state["repeat_item"]:
                 state["current"] = finished
             elif state["current_index"] + 1 < len(state["queue"]):

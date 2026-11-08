@@ -1316,6 +1316,40 @@ def test_repair_voice_sentences_action_installs_managed_file(tmp_path: Path) -> 
     ).is_file()
 
 
+def test_repeat_item_does_not_complete_queue(tmp_path: Path) -> None:
+    """Pin: under repeat_item, queue_status never reports complete."""
+    from custom_components.jellyfin_assist.queue_store import NativeQueueStore
+
+    class MemoryBackend:
+        def __init__(self) -> None:
+            self._data: dict[str, Any] = {}
+
+        async def async_load(self) -> dict[str, Any] | None:
+            return None
+
+        async def async_save(self, data: Any) -> None:
+            self._data = dict(data)
+
+    backend = MemoryBackend()
+    store = NativeQueueStore(backend, storage_key="test")
+    run(store.async_load())
+    run(
+        store.async_add(
+            "player-1",
+            {"id": "item-1", "name": "Repeated", "type": "Movie"},
+        )
+    )
+    run(store.async_settings("player-1", repeat_item=True, repeat_queue=False))
+    run(store.async_next("player-1"))
+
+    result = run(store.async_get("player-1"))
+    content = result["content"]
+    assert content["status"] == "ok"
+    assert content["repeat_item"] is True
+    assert content["completed_count"] < content["count"]
+    assert content["current"] is not None
+
+
 def test_search_series_preserves_multi_season_metadata(tmp_path: Path) -> None:
     episodes = [
         {"Id": "special", "ParentIndexNumber": 0, "IndexNumber": 1},

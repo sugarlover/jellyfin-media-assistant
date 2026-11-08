@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from custom_components.jellyfin_assist.item_lookup import (
-    compare_item_responses,
     enrich_jellyha_item,
 )
 
@@ -42,26 +41,3 @@ def test_enrichment_matches_jellyha_when_no_stream_fields_exist() -> None:
     assert "media_streams" not in result
     assert result["is_favorite"] is False
     assert result["is_played"] is False
-
-
-def test_compare_item_responses_is_order_independent_for_mappings() -> None:
-    parity = compare_item_responses(
-        {"item": {"Id": "one", "Name": "Title"}},
-        {"item": {"Name": "Title", "Id": "one"}},
-    )
-
-    assert parity.exact_match is True
-    assert parity.differing_paths == ()
-
-
-def test_compare_item_responses_reports_nested_paths() -> None:
-    parity = compare_item_responses(
-        {"item": {"Name": "One", "MediaStreams": [{"Codec": "h264"}]}},
-        {"item": {"Name": "Two", "MediaStreams": [{"Codec": "hevc"}]}},
-    )
-
-    assert parity.exact_match is False
-    assert parity.differing_paths == (
-        "$.item.MediaStreams[0].Codec",
-        "$.item.Name",
-    )

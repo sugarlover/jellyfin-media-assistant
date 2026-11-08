@@ -508,6 +508,8 @@ async def async_resolve_media_intent(
     requested_artist = _text(artist)
     requested_year = _optional_int(year)
     requested_series = _text(series)
+    # Season 0 is intentionally not a valid numbered-season input on the orchestrator path;
+    # it falls through to generic series resolution, which starts at Season 1 or the earliest available season.
     requested_season = _optional_int(season)
     requested_episode = _optional_int(episode)
 
