@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import logging
 import re
+import time
 from typing import Any
 
 from .const import (
@@ -31,6 +33,19 @@ _PLAYABLE_ITEM_TYPES = frozenset({"Movie", "Episode", "Audio", "MusicVideo", "Vi
 _CONTAINER_ITEM_TYPES = frozenset({"series", "musicalbum", "musicartist"})
 _WHITESPACE_RE = re.compile(r"\s+")
 _NORMALIZE_KEY_RE = re.compile(r"[^a-z0-9]+")
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class _StageTimer:
+    """Wall-clock checkpoint logger for orchestrator path stages (JMA_PERF)."""
+
+    def __init__(self) -> None:
+        self._start = time.perf_counter()
+
+    def log(self, stage: str) -> None:
+        elapsed_ms = round((time.perf_counter() - self._start) * 1000, 1)
+        _LOGGER.debug("JMA_PERF: stage=%s ms=%.1f", stage, elapsed_ms)
 
 
 def _text(value: Any) -> str:
@@ -1116,6 +1131,7 @@ async def async_media_orchestrator(
 ) -> dict[str, Any]:
     """Resolve a media request, manage the queue, and play or add its plan."""
 
+    timer = _StageTimer()
     requested_operation = _text(operation).lower() or "play"
     requested_player = _text(media_player)
     requested_display = _text(media_player_display_name)
@@ -1158,6 +1174,7 @@ async def async_media_orchestrator(
         )
 
     resolved_player = _text(resolution.get("media_player"))
+    timer.log("service_entry")
     resolved_player_name = (
         requested_display
         or _requested_entity_display_name(requested_player)
@@ -1184,6 +1201,7 @@ async def async_media_orchestrator(
         episode=resolved_episode,
         context=context,
     )
+    timer.log("catalog_search")
     if not resolver.get("success", False):
         if resolver.get("status") == "confirmation_required":
             confirmation = resolver.get("confirmation")
@@ -1268,6 +1286,7 @@ async def async_media_orchestrator(
         )
 
     playback_plan = await _normalize_playback_plan(runtime, raw_plan)
+    timer.log("resolve")
 
     if requested_operation == "add":
         add_results: list[dict[str, Any]] = []
@@ -1399,6 +1418,7 @@ async def async_media_orchestrator(
 
     first_item = playback_plan[0]
     playback = await async_play_item(hass, runtime, item=first_item, media_player=resolved_player)
+    timer.log("playback_strategy")
     success = bool(playback.get("success", False))
     description = _clean_message(_play_description(resolver, first_item, query))
     message = (
@@ -1406,7 +1426,7 @@ async def async_media_orchestrator(
         if success
         else f"Queued {len(playback_plan)} item{'s' if len(playback_plan) != 1 else ''}, but playback failed."
     )
-    return _base_result(
+    result = _base_result(
         success=success,
         status="playing" if success else "playback_failed",
         operation="play",
@@ -1422,6 +1442,8 @@ async def async_media_orchestrator(
         queue_response=last_queue_response,
         playback_response=playback,
     )
+    timer.log("response_build")
+    return result
 
 
 def _pending_direct_description(item: Mapping[str, Any]) -> str:
