@@ -64,6 +64,19 @@ class ChromecastPlaybackStrategy:
 
         try:
             entity_state = hass.states.get(entity_id)
+
+            # Deterministic registry guard: only a real Chromecast entity
+            # (platform == "chromecast") is worth the blocking pychromecast
+            # discovery. Non-Chromecast targets return immediately, avoiding
+            # the 5s discovery timeout. Import is lazy (mirrors the pychromecast
+            # import below) so the module has no hard homeassistant dependency.
+            from homeassistant.helpers import entity_registry
+
+            registry = entity_registry.async_get(hass)
+            entry = registry.async_get(entity_id) if registry is not None else None
+            if entry is None or entry.platform != "chromecast":
+                return ("Unknown", False)
+
             if entity_state:
                 friendly_name = entity_state.attributes.get("friendly_name")
                 if friendly_name:

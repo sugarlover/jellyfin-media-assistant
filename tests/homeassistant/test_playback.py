@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+import types
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
+from tests.homeassistant.ha_stubs import install_homeassistant_stubs
+
+install_homeassistant_stubs()
 
 from custom_components.jellyfin_assist.playback import (
     NoNextUpEpisodeError,
@@ -16,6 +22,9 @@ from custom_components.jellyfin_assist.playback import (
     async_prepare_playback_item,
     build_play_media_data,
     playback_mode,
+)
+from custom_components.jellyfin_assist.playback_strategy import (
+    ChromecastPlaybackStrategy,
 )
 
 
@@ -404,3 +413,98 @@ def test_successful_playback_creates_fresh_tracking_session(
     assert result["requested_item_id"] == "series-1"
     assert result["item_id"] == "episode-7"
     assert result["resolved_from_type"] == "Series"
+
+
+def _install_pychromecast_spy(monkeypatch: Any) -> list[dict[str, Any]]:
+    """Install a fake pychromecast module and return the spy call log."""
+
+    calls: list[dict[str, Any]] = []
+
+    def get_listed_chromecasts(
+        friendly_names: list[str], *, discovery_timeout: float
+    ) -> tuple[list[Any], Any]:
+        calls.append(
+            {"friendly_names": list(friendly_names), "discovery_timeout": discovery_timeout}
+        )
+        device = SimpleNamespace(model_name="Chromecast Ultra")
+        return [device], None
+
+    pychromecast = types.ModuleType("pychromecast")
+    pychromecast.get_listed_chromecasts = get_listed_chromecasts
+    monkeypatch.setitem(sys.modules, "pychromecast", pychromecast)
+    return calls
+
+
+def _hass_with_registry(platform: str | None, entity_id: str) -> Any:
+    """Build a FakeHass whose entity registry reports the given platform."""
+
+    entry = SimpleNamespace(entity_id=entity_id, platform=platform)
+    registry = SimpleNamespace(async_get=lambda eid: entry)
+    fake_hass = types.SimpleNamespace(
+        states=SimpleNamespace(get=lambda eid: SimpleNamespace(
+            attributes={"friendly_name": "Example Chromecast"}, state="idle",
+        )),
+        entity_registry=registry,
+    )
+    return fake_hass
+
+
+def test_non_chromecast_target_skips_discovery_without_pychromecast(
+    monkeypatch: Any,
+) -> None:
+    """A non-chromecast registry entry (or missing entry) skips discovery entirely:
+    the real discover_chromecast_model returns ("Unknown", False) and pychromecast
+    is never imported/called."""
+
+    for platform in (None, "cast", "media_player"):
+        calls = _install_pychromecast_spy(monkeypatch)
+        entity_id = "media_player.voice"
+
+        hass = _hass_with_registry(platform, entity_id)
+
+        result = ChromecastPlaybackStrategy.discover_chromecast_model(hass, entity_id)
+
+        assert result == ("Unknown", False)
+        assert calls == [], (
+            f"pychromecast was called for non-chromecast platform {platform!r}: {calls}"
+        )
+
+
+def test_missing_registry_entry_skips_discovery_without_pychromecast(
+    monkeypatch: Any,
+) -> None:
+    """No registry entry at all -> skip discovery, pychromecast never called."""
+
+    calls = _install_pychromecast_spy(monkeypatch)
+    entity_id = "media_player.example"
+
+    hass = SimpleNamespace(
+        states=SimpleNamespace(get=lambda eid: None),
+        entity_registry=SimpleNamespace(async_get=lambda hass_: None),
+    )
+
+    result = ChromecastPlaybackStrategy.discover_chromecast_model(hass, entity_id)
+
+    assert result == ("Unknown", False)
+    assert calls == []
+
+
+def test_chromecast_target_reaches_pychromecast_discovery(
+    monkeypatch: Any,
+) -> None:
+    """A registry entry with platform == "chromecast" proceeds to the blocking
+    pychromecast discovery (D3: real-cast path unchanged)."""
+
+    calls = _install_pychromecast_spy(monkeypatch)
+    entity_id = "media_player.example_chromecast"
+
+    hass = _hass_with_registry("chromecast", entity_id)
+
+    result = ChromecastPlaybackStrategy.discover_chromecast_model(hass, entity_id)
+
+    # Discovery reached: the fake pychromecast was invoked and returned the
+    # advertised model.
+    assert len(calls) == 1
+    assert calls[0]["friendly_names"] == ["Example Chromecast"]
+    assert calls[0]["discovery_timeout"] == 5.0
+    assert result == ("Chromecast Ultra", False)
