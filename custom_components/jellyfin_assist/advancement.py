@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import asyncio
 import logging
 import re
@@ -635,7 +635,7 @@ def async_setup_queue_advancement(
     entry.async_on_unload(
         async_track_time_interval(
             hass,
-            PLAYBACK_WRITESYNC_INTERVAL_SECONDS,
+            timedelta(seconds=PLAYBACK_WRITESYNC_INTERVAL_SECONDS),
             _async_periodic_write_sync,
         )
     )
