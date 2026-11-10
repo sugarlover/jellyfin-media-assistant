@@ -635,8 +635,8 @@ def async_setup_queue_advancement(
     entry.async_on_unload(
         async_track_time_interval(
             hass,
-            timedelta(seconds=PLAYBACK_WRITESYNC_INTERVAL_SECONDS),
-            _async_periodic_write_sync,
+            interval=timedelta(seconds=PLAYBACK_WRITESYNC_INTERVAL_SECONDS),
+            action=_async_periodic_write_sync,
         )
     )
 

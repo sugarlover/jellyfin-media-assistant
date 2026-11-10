@@ -971,3 +971,45 @@ def test_periodic_write_sync_skips_paused_players(
     run(_async_periodic_write_sync_tasks(hass, rt))
 
     assert client.calls == []
+
+
+def test_setup_tracks_periodic_write_sync_with_keyword_args(
+    tmp_path: Path,
+) -> None:
+    """Regression guard for the HA ``async_track_time_interval`` argument order.
+
+    The HA core build deployed on this host exposes
+    ``async_track_time_interval(hass, action, interval)`` — the reverse of
+    upstream's ``async_track_time_interval(hass, interval, action)``. A
+    positional call therefore drops ``timedelta(...)`` into the ``action``
+    slot and the callback into ``interval``, which aborts entry setup with
+    ``'function' object has no attribute 'total_seconds'``. The call site
+    must use keyword args so it is immune to either parameter order.
+    """
+    from unittest.mock import patch
+
+    from custom_components.jellyfin_assist.advancement import (
+        PLAYBACK_WRITESYNC_INTERVAL_SECONDS,
+    )
+
+    hass = FakeHass(tmp_path)
+    entry = FakeEntry("entry", {})
+    rt = runtime(object())
+
+    with patch(
+        "custom_components.jellyfin_assist.advancement.async_track_time_interval"
+    ) as tracker:
+        async_setup_queue_advancement(hass, entry, rt)
+
+    assert tracker.call_count == 1
+    call = tracker.call_args
+    # Only ``hass`` may be passed positionally; interval/action must be
+    # keyword args so the call is immune to the parameter order.
+    assert call.args == (hass,)
+    interval = call.kwargs["interval"]
+    action = call.kwargs["action"]
+    # interval must be the timedelta and action the callback — not swapped.
+    assert isinstance(interval, timedelta)
+    assert interval == timedelta(seconds=PLAYBACK_WRITESYNC_INTERVAL_SECONDS)
+    assert not isinstance(action, timedelta)
+    assert callable(action)
