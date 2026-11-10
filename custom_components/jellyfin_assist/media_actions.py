@@ -59,6 +59,7 @@ async def async_play_item(
     *,
     item: Mapping[str, Any],
     media_player: str,
+    start_position_ticks: int | None = None,
 ) -> dict[str, Any]:
     """Turn on a target and play one resolved Jellyfin item."""
 
@@ -115,6 +116,7 @@ async def async_play_item(
             runtime,
             target_entity_id=media_player,
             item_id=item_id,
+            start_position_ticks=start_position_ticks,
         )
     except Exception as err:
         return {

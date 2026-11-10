@@ -162,6 +162,10 @@ _SERIES_PREFIX_RE = re.compile(
     r"^(?:the\s+)?(?:show|series|tv show|television show)\s+",
     re.IGNORECASE,
 )
+_BEGINNING_PREFIX_RE = re.compile(
+    r"^(?:the\s+)?beginning\s+of\s+",
+    re.IGNORECASE,
+)
 
 
 class VoiceIntentValidationError(ValueError):
@@ -283,6 +287,14 @@ def build_voice_script_call(
     artist = ""
     series = ""
 
+    # "Play the beginning of X" asks for a fresh start; flag it so playback
+    # can force StartPositionTicks=0 instead of resuming.
+    begin_at_start = False
+    beginning_match = _BEGINNING_PREFIX_RE.match(request)
+    if beginning_match:
+        begin_at_start = True
+        request = request[beginning_match.end():].strip()
+
     if intent_type in _SPLIT_ARTIST_INTENTS:
         request, artist = _split_artist_request(request)
     elif intent_type in _EPISODE_TITLE_INTENTS:
@@ -304,6 +316,8 @@ def build_voice_script_call(
     if intent_type in _SEASON_EPISODE_INTENTS:
         data["season"] = _optional_positive_int(slots, "season")
         data["episode"] = _optional_positive_int(slots, "episode")
+    if begin_at_start:
+        data["start_position_ticks"] = 0
 
     return VoiceScriptCall(SERVICE_MEDIA_ORCHESTRATOR, data, domain=DOMAIN)
 

@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timezone
+import asyncio
 import logging
 import re
 from typing import Any, Final
 
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_track_time_interval,
+)
 
+from .api import JellyfinApiError
 from .const import DOMAIN
 from .media_actions import async_play_item
 from .queue_store import QueueStoreError
@@ -19,6 +24,7 @@ from .runtime import JellyfinAssistRuntime
 _LOGGER = logging.getLogger(__name__)
 
 COMPLETION_THRESHOLD_PERCENT: Final = 95.0
+PLAYBACK_WRITESYNC_INTERVAL_SECONDS: Final = 60.0
 _CONTENT_ID_PATTERN: Final = re.compile(r"/(?:Videos|Audio)/([A-Za-z0-9]+)(?:/|$)")
 
 
@@ -187,6 +193,55 @@ async def _async_notify_failure(
     except Exception:
         _LOGGER.exception(
             "Could not create Jellyfin Assist failure notification"
+        )
+
+
+async def _async_write_sync_position(
+    hass: HomeAssistant, runtime: JellyfinAssistRuntime, player: str, is_paused: bool
+) -> None:
+    """Push the tracked position of ``player`` to the user's PlayingItems feed.
+
+    Called on pause and periodically while playing. Writes are best-effort:
+    any transport failure is logged and swallowed so playback never breaks.
+    """
+    session = runtime.playback_sessions.get(player)
+    if not isinstance(session, dict):
+        return
+    item_id = session.get("item_id")
+    if not item_id:
+        return
+    duration_seconds = session.get("duration_seconds")
+    if (
+        not isinstance(duration_seconds, (int, float))
+        or duration_seconds <= 0
+    ):
+        return
+    accumulated: int | None = None
+    if isinstance(session.get("accumulated_playing_seconds"), (int, float)):
+        accumulated = int(session["accumulated_playing_seconds"])
+    if accumulated is None:
+        return
+    if not is_paused and isinstance(session.get("playing_started_at"), datetime):
+        accumulated += max(0, int((datetime.now(timezone.utc) - session["playing_started_at"]).total_seconds()))
+    ticks = int(accumulated * 10_000 * 100)
+    # Never write a position past the completion threshold: the item will be
+    # marked complete on the first advancement tick past that point, and
+    # writing a near-complete position would race the completion write.
+    if ticks / (duration_seconds * 10_000 * 100) * 100 >= COMPLETION_THRESHOLD_PERCENT:
+        return
+    try:
+        await runtime.client.async_post_playing_items(
+            item_id=item_id,
+            position_ticks=ticks,
+            is_paused=is_paused,
+            device_id=player,
+        )
+    except (OSError, JellyfinApiError, asyncio.TimeoutError) as exc:
+        _LOGGER.debug(
+            "PlayingItems write sync failed for %s (%s): %s",
+            player,
+            item_id,
+            exc,
         )
 
 
@@ -465,6 +520,19 @@ async def _async_process_completion(
         )
 
 
+async def _async_periodic_write_sync_tasks(
+    hass: HomeAssistant, runtime: JellyfinAssistRuntime
+) -> None:
+    """Write the tracked position for every player currently playing."""
+    for player in runtime.playback_targets:
+        state = hass.states.get(player)
+        if state is None or state.state != "playing":
+            continue
+        await _async_write_sync_position(
+            hass, runtime, player=player, is_paused=False
+        )
+
+
 def async_setup_queue_advancement(
     hass: HomeAssistant,
     entry: Any,
@@ -505,6 +573,24 @@ def async_setup_queue_advancement(
             runtime.playback_sessions.pop(player, None)
             return
 
+        # Pause write sync: when playback stops to a pause (not off/idle),
+        # push the tracked position to PlayingItems. ``is_paused=True``.
+        if getattr(old_state, "state", None) == "playing" and new_player_state in {
+            "paused",
+            "buffering",
+        }:
+            entry.async_create_background_task(
+                hass,
+                _async_write_sync_position(
+                    hass,
+                    runtime,
+                    player=player,
+                    is_paused=True,
+                ),
+                f"{DOMAIN} play sync {player}",
+            )
+            return
+
         # Preserve the original explicit source-level completion guardrails.
         if getattr(old_state, "state", None) != "playing":
             if new_player_state == "idle":
@@ -532,6 +618,27 @@ def async_setup_queue_advancement(
         _async_state_changed,
     )
     entry.async_on_unload(unsubscribe)
+
+    @callback
+    def _async_periodic_write_sync(_now: Any) -> None:
+        # Only write for players that are actively playing; the position is
+        # read from the existing ``accumulated_playing_seconds`` accumulator.
+        entry.async_create_background_task(
+            hass,
+            _async_periodic_write_sync_tasks(
+                hass,
+                runtime,
+            ),
+            f"{DOMAIN} play sync periodic",
+        )
+
+    entry.async_on_unload(
+        async_track_time_interval(
+            hass,
+            PLAYBACK_WRITESYNC_INTERVAL_SECONDS,
+            _async_periodic_write_sync,
+        )
+    )
 
 
 __all__ = [

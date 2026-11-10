@@ -1,4 +1,4 @@
-"""Async, GET-only Jellyfin API client for Home Assistant runtime use."""
+"""Async Jellyfin API client for Home Assistant runtime use."""
 
 from __future__ import annotations
 
@@ -76,6 +76,7 @@ class JellyfinApiClient:
     api_key: str = field(repr=False)
     verify_ssl: bool = True
     timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
+    user_id: str = ""
 
     def __post_init__(self) -> None:
         self.server_url = normalize_server_url(self.server_url)
@@ -109,9 +110,64 @@ class JellyfinApiClient:
         endpoint: str,
         **kwargs: Any,
     ) -> Any:
-        """Execute one JellyHA-compatible request, rejecting every non-GET method."""
+        """Execute one JellyHA-compatible request.
 
-        if method.upper() != "GET":
+        All methods are restricted to GET except the single allowed
+        write endpoint: POST /Users/{userId}/PlayingItems.
+        """
+
+        normalized_method = method.upper()
+        if normalized_method == "POST":
+            # The only permitted write: user-scoped playback position.
+            expected = f"/Users/{quote(self.user_id, safe='')}/PlayingItems"
+            if endpoint.lstrip("/") != expected.lstrip("/"):
+                raise JellyfinApiError(
+                    "Jellyfin Media Assistant blocks non-GET requests"
+                )
+            unexpected = set(kwargs) - {"json"}
+            if unexpected:
+                names = ", ".join(sorted(unexpected))
+                raise JellyfinApiError(
+                    f"Unsupported write request options: {names}"
+                )
+            url = f"{self.server_url}/{endpoint.lstrip('/')}"
+            try:
+                async with self.session.post(
+                    url,
+                    json=kwargs.get("json"),
+                    headers=self._headers,
+                    ssl=self.verify_ssl,
+                    timeout=ClientTimeout(total=self.timeout_seconds),
+                ) as response:
+                    if response.status in {401, 403}:
+                        raise JellyfinAuthenticationError(
+                            "Jellyfin rejected the API key or user access"
+                        )
+                    if response.status >= 500:
+                        raise JellyfinConnectionError(
+                            f"Jellyfin returned temporary HTTP {response.status}"
+                        )
+                    if response.status >= 400:
+                        body = (await response.text())[:300]
+                        raise JellyfinInvalidResponseError(
+                            f"Jellyfin returned HTTP {response.status}: {body}"
+                        )
+                    if response.status == 204:
+                        return None
+                    try:
+                        return await response.json(content_type=None)
+                    except (ClientResponseError, json.JSONDecodeError, ValueError) as err:
+                        raise JellyfinInvalidResponseError(
+                            "Jellyfin returned invalid JSON"
+                        ) from err
+            except JellyfinApiError:
+                raise
+            except TimeoutError as err:
+                raise JellyfinConnectionError("Jellyfin request timed out") from err
+            except ClientError as err:
+                raise JellyfinConnectionError("Could not reach Jellyfin") from err
+
+        if normalized_method != "GET":
             raise JellyfinApiError("Jellyfin Media Assistant blocks non-GET requests")
         unexpected = set(kwargs) - {"params"}
         if unexpected:
@@ -275,6 +331,34 @@ class JellyfinApiClient:
         copied = dict(result)
         copied["Items"] = [dict(item) for item in items]
         return copied
+
+    async def async_post_playing_items(
+        self,
+        *,
+        item_id: str,
+        position_ticks: int,
+        is_paused: bool,
+        device_id: str = "jellyfin-assist",
+    ) -> None:
+        """Report playback position to the Jellyfin server (POST PlayingItems)."""
+
+        normalized_item_id = item_id.strip()
+        if not normalized_item_id:
+            raise ValueError("Jellyfin item ID is required")
+        if position_ticks < 0:
+            raise ValueError("PositionTicks cannot be negative")
+
+        payload = {
+            "PositionTicks": position_ticks,
+            "IsPaused": is_paused,
+            "ItemId": normalized_item_id,
+            "DeviceId": device_id,
+        }
+        await self._request(
+            "POST",
+            f"/Users/{quote(self.user_id, safe='')}/PlayingItems",
+            json=payload,
+        )
 
     def get_image_url(
         self,

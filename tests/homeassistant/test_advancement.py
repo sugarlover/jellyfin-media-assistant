@@ -259,7 +259,7 @@ def test_setup_tracks_all_configured_playback_targets(
         "media_player.one",
         "media_player.two",
     )
-    assert len(entry.unload_callbacks) == 1
+    assert len(entry.unload_callbacks) == 2
     assert rt.queue_advancement_targets == (
         "media_player.one",
         "media_player.two",
@@ -744,3 +744,230 @@ def test_normal_queue_completion_is_silent(
         rt.last_queue_advancement["completion_method"]
         == "player_metadata"
     )
+
+
+class RecordingPlayingClient:
+    """Standalone client whose async_post_playing_items records calls."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def async_post_playing_items(
+        self,
+        *,
+        item_id: str,
+        position_ticks: int,
+        is_paused: bool,
+        device_id: str = "jellyfin-assist",
+    ) -> None:
+        self.calls.append(
+            {
+                "item_id": item_id,
+                "position_ticks": position_ticks,
+                "is_paused": is_paused,
+                "device_id": device_id,
+            }
+        )
+
+
+def runtime_with_client(client: Any) -> JellyfinAssistRuntime:
+    async def loader() -> Any:
+        raise AssertionError("not used")
+
+    return JellyfinAssistRuntime(
+        client=client,  # type: ignore[arg-type]
+        catalog_manager=CatalogManager(
+            snapshot_loader=loader,
+            requested_types=["Movie"],
+            cache_identity="server:user",
+            cache_store=None,
+        ),
+        connection_info=None,
+        playback_targets=("media_player.example",),
+        queue_client=object(),
+    )
+
+
+def _session(
+    *,
+    duration_seconds: float,
+    accumulated_playing_seconds: float,
+    playing_started_at: Any = None,
+) -> dict[str, Any]:
+    return {
+        "item_id": "abc123",
+        "requested_item_id": "abc123",
+        "duration_seconds": duration_seconds,
+        "accumulated_playing_seconds": accumulated_playing_seconds,
+        "playing_started_at": playing_started_at,
+    }
+
+
+def test_write_sync_on_pause_posts_tracked_position(tmp_path: Path) -> None:
+    from custom_components.jellyfin_assist.advancement import (
+        _async_write_sync_position,
+    )
+
+    client = RecordingPlayingClient()
+    rt = runtime_with_client(client)
+    rt.playback_sessions["media_player.example"] = _session(
+        duration_seconds=180.0,
+        accumulated_playing_seconds=60.0,
+    )
+    hass = FakeHass(tmp_path)
+
+    run(
+        _async_write_sync_position(
+            hass,
+            rt,
+            player="media_player.example",
+            is_paused=True,
+        )
+    )
+
+    assert client.calls == [
+        {
+            "item_id": "abc123",
+            # 60s * 10_000 ticks/sec * 100 nano ticks
+            "position_ticks": 60.0 * 10_000 * 100,
+            "is_paused": True,
+            "device_id": "media_player.example",
+        }
+    ]
+
+
+def test_write_sync_posts_live_in_progress_seconds_while_playing(
+    tmp_path: Path,
+) -> None:
+    from custom_components.jellyfin_assist.advancement import (
+        _async_write_sync_position,
+    )
+
+    client = RecordingPlayingClient()
+    rt = runtime_with_client(client)
+    # Set playing_started_at 90s in the past so the live-elapsed branch
+    # resolves to 90s (int() truncates the sub-second drift).
+    started = datetime.now(timezone.utc) - timedelta(seconds=90)
+    rt.playback_sessions["media_player.example"] = _session(
+        duration_seconds=180.0,
+        accumulated_playing_seconds=0.0,
+        playing_started_at=started,
+    )
+    hass = FakeHass(tmp_path)
+
+    run(
+        _async_write_sync_position(
+            hass,
+            rt,
+            player="media_player.example",
+            is_paused=False,
+        )
+    )
+
+    assert client.calls == [
+        {
+            "item_id": "abc123",
+            # 90s of live elapsed * 10_000 ticks/sec * 100 nano ticks
+            "position_ticks": 90 * 10_000 * 100,
+            "is_paused": False,
+            "device_id": "media_player.example",
+        }
+    ]
+
+
+def test_write_sync_skips_position_past_completion_threshold(
+    tmp_path: Path,
+) -> None:
+    from custom_components.jellyfin_assist.advancement import (
+        _async_write_sync_position,
+    )
+
+    client = RecordingPlayingClient()
+    rt = runtime_with_client(client)
+    # 100s out of 100s = 100% -> past the 95% threshold, must not write.
+    rt.playback_sessions["media_player.example"] = _session(
+        duration_seconds=100.0,
+        accumulated_playing_seconds=100.0,
+    )
+    hass = FakeHass(tmp_path)
+
+    run(
+        _async_write_sync_position(
+            hass,
+            rt,
+            player="media_player.example",
+            is_paused=True,
+        )
+    )
+
+    assert client.calls == []
+
+
+def test_write_sync_skips_when_no_session(tmp_path: Path) -> None:
+    from custom_components.jellyfin_assist.advancement import (
+        _async_write_sync_position,
+    )
+
+    client = RecordingPlayingClient()
+    rt = runtime_with_client(client)
+    hass = FakeHass(tmp_path)
+
+    run(
+        _async_write_sync_position(
+            hass,
+            rt,
+            player="media_player.example",
+            is_paused=True,
+        )
+    )
+
+    assert client.calls == []
+
+
+def test_periodic_write_sync_writes_only_players_that_are_playing(
+    tmp_path: Path,
+) -> None:
+    from custom_components.jellyfin_assist.advancement import (
+        _async_periodic_write_sync_tasks,
+    )
+
+    client = RecordingPlayingClient()
+    rt = runtime_with_client(client)
+    rt.playback_sessions["media_player.example"] = _session(
+        duration_seconds=180.0,
+        accumulated_playing_seconds=90.0,
+    )
+    hass = FakeHass(tmp_path)
+    hass.states.set("media_player.example", "playing", {})
+
+    run(_async_periodic_write_sync_tasks(hass, rt))
+
+    assert client.calls == [
+        {
+            "item_id": "abc123",
+            "position_ticks": 90.0 * 10_000 * 100,
+            "is_paused": False,
+            "device_id": "media_player.example",
+        }
+    ]
+
+
+def test_periodic_write_sync_skips_paused_players(
+    tmp_path: Path,
+) -> None:
+    from custom_components.jellyfin_assist.advancement import (
+        _async_periodic_write_sync_tasks,
+    )
+
+    client = RecordingPlayingClient()
+    rt = runtime_with_client(client)
+    rt.playback_sessions["media_player.example"] = _session(
+        duration_seconds=180.0,
+        accumulated_playing_seconds=90.0,
+    )
+    hass = FakeHass(tmp_path)
+    hass.states.set("media_player.example", "paused", {})
+
+    run(_async_periodic_write_sync_tasks(hass, rt))
+
+    assert client.calls == []

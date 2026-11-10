@@ -347,7 +347,7 @@ def test_successful_playback_creates_fresh_tracking_session(
 
     monkeypatch.setattr(
         "custom_components.jellyfin_assist.playback.build_play_media_data",
-        lambda runtime_arg, target, prepared_arg, model: (
+        lambda runtime_arg, target, prepared_arg, model, **_kwargs: (
             {
                 "entity_id": target,
                 "media_content_id": (

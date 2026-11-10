@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from pathlib import Path
 import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 
@@ -295,7 +295,18 @@ def install_homeassistant_stubs() -> None:
 
         return unsubscribe
 
+    def async_track_time_interval(
+        hass: Any, interval: float, action: Any
+    ) -> Any:
+        hass.tracked_time_intervals.append((interval, action))
+
+        def unsubscribe() -> None:
+            hass.unsubscribed_time_intervals.append(interval)
+
+        return unsubscribe
+
     event.async_track_state_change_event = async_track_state_change_event
+    event.async_track_time_interval = async_track_time_interval
     selector.BooleanSelector = _Selector
     selector.EntitySelector = _Selector
     selector.EntitySelectorConfig = EntitySelectorConfig
@@ -378,6 +389,13 @@ class FakeStates:
 
     def get(self, entity_id: str) -> FakeState | None:
         return self._states.get(entity_id)
+
+    def set(self, entity_id: str, state: str, attributes: dict[str, Any]) -> None:
+        self._states[entity_id] = SimpleNamespace(
+            entity_id=entity_id,
+            state=state,
+            attributes=dict(attributes),
+        )
 
     def async_all(self, domain: str | None = None) -> list[FakeState]:
         if domain is None:
@@ -511,6 +529,8 @@ class FakeHass:
         self.entity_registry = FakeEntityRegistry(default_registry)
         self.tracked_state_changes: list[tuple[tuple[str, ...], Any]] = []
         self.unsubscribed_state_changes: list[tuple[str, ...]] = []
+        self.tracked_time_intervals: list[tuple[float, Any]] = []
+        self.unsubscribed_time_intervals: list[float] = []
 
     async def async_add_executor_job(self, target: Any, *args: Any) -> Any:
         return target(*args)

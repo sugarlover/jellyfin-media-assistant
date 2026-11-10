@@ -81,6 +81,7 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
         server_url=connection.server_url,
         api_key=connection.api_key,
         verify_ssl=connection.verify_ssl,
+        user_id=connection.user_id,
     )
     catalog_client = JellyfinCatalogClient(api=client, user_id=connection.user_id)
     queue_storage_key = f"{DOMAIN}.queue.{entry.entry_id}"

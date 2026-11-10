@@ -103,19 +103,12 @@ def build_play_media_data(
     target_entity_id: str,
     prepared: PreparedPlaybackItem,
     device_model: str,
+    *,
+    force_start_position_ticks: int | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Build the exact Home Assistant play_media payload used for native casting."""
 
     media_info = ChromecastPlaybackStrategy.analyze_media(prepared.item)
-    playback_info = ChromecastPlaybackStrategy.get_playback_info(
-        runtime.client.server_url,
-        runtime.client.api_key,
-        prepared.item_id,
-        media_info,
-        device_model,
-        item_type=prepared.item_type,
-    )
-
     metadata: dict[str, Any] = {
         "title": prepared.item.get("Name", "Jellyfin Media"),
         "images": [
@@ -127,6 +120,27 @@ def build_play_media_data(
             }
         ],
     }
+
+    # Extract PlaybackPositionTicks from UserData for resume support.
+    start_position_ticks: int | None = None
+    if force_start_position_ticks is not None:
+        start_position_ticks = force_start_position_ticks
+    else:
+        user_data = prepared.item.get("UserData")
+        if isinstance(user_data, Mapping):
+            raw_ticks = user_data.get("PlaybackPositionTicks")
+            if isinstance(raw_ticks, (int, float)) and raw_ticks > 0:
+                start_position_ticks = int(raw_ticks)
+
+    playback_info = ChromecastPlaybackStrategy.get_playback_info(
+        runtime.client.server_url,
+        runtime.client.api_key,
+        prepared.item_id,
+        media_info,
+        device_model,
+        item_type=prepared.item_type,
+        start_position_ticks=start_position_ticks,
+    )
 
     if prepared.item_type == "Episode":
         metadata.update(
@@ -159,6 +173,7 @@ async def async_play_on_chromecast(
     *,
     target_entity_id: str,
     item_id: str,
+    start_position_ticks: int | None = None,
 ) -> dict[str, Any]:
     """Execute the proven native Chromecast playback path."""
 
@@ -187,6 +202,7 @@ async def async_play_on_chromecast(
         normalized_target,
         prepared,
         model_name,
+        force_start_position_ticks=start_position_ticks,
     )
 
     await hass.services.async_call(

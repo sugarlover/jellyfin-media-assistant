@@ -1128,6 +1128,7 @@ async def async_media_orchestrator(
     season: int | None = None,
     episode: int | None = None,
     context: Any = None,
+    start_position_ticks: int | None = None,
 ) -> dict[str, Any]:
     """Resolve a media request, manage the queue, and play or add its plan."""
 
@@ -1417,7 +1418,7 @@ async def async_media_orchestrator(
             )
 
     first_item = playback_plan[0]
-    playback = await async_play_item(hass, runtime, item=first_item, media_player=resolved_player)
+    playback = await async_play_item(hass, runtime, item=first_item, media_player=resolved_player, start_position_ticks=start_position_ticks)
     timer.log("playback_strategy")
     success = bool(playback.get("success", False))
     description = _clean_message(_play_description(resolver, first_item, query))

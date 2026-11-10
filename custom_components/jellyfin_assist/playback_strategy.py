@@ -108,10 +108,16 @@ class ChromecastPlaybackStrategy:
         media_info: dict[str, Any],
         device_model: str,
         item_type: str = "Video",
+        start_position_ticks: int | None = None,
     ) -> dict[str, str]:
         """Return the stable JellyHA-compatible media URL and content type."""
 
         is_legacy_device = device_model == "Chromecast"
+        position_suffix = (
+            f"&StartPositionTicks={start_position_ticks}"
+            if start_position_ticks is not None
+            else ""
+        )
 
         video_codec = media_info["video_codec"]
         video_height = media_info["video_height"]
@@ -152,6 +158,7 @@ class ChromecastPlaybackStrategy:
                     "media_url": (
                         f"{server_url}/Audio/{item_id}/stream"
                         f"?static=true&api_key={api_key}"
+                        f"{position_suffix}"
                     ),
                     "content_type": content_type,
                 }
@@ -160,6 +167,7 @@ class ChromecastPlaybackStrategy:
             media_url = (
                 f"{server_url}/Audio/{item_id}/master.m3u8"
                 f"?api_key={api_key}"
+                f"{position_suffix}"
                 f"&DeviceId=JellyHA_Cast"
                 f"&MediaSourceId={item_id}"
                 f"&AudioCodec=mp3"
@@ -202,6 +210,7 @@ class ChromecastPlaybackStrategy:
                 f"{server_url}/Videos/{item_id}/stream"
                 f"?Static=true"
                 f"&api_key={api_key}"
+                f"{position_suffix}"
                 f"&VideoCodec=h264"
                 f"&AudioCodec=aac"
             )
@@ -211,6 +220,7 @@ class ChromecastPlaybackStrategy:
             media_url = (
                 f"{server_url}/Videos/{item_id}/master.m3u8"
                 f"?api_key={api_key}"
+                f"{position_suffix}"
                 f"&MediaSourceId={item_id}"
                 f"&Width=1280"
                 f"&Height=720"
@@ -237,6 +247,7 @@ class ChromecastPlaybackStrategy:
             media_url = (
                 f"{server_url}/Videos/{item_id}/master.m3u8"
                 f"?api_key={api_key}"
+                f"{position_suffix}"
                 f"&MediaSourceId={item_id}"
                 f"&Width=1920"
                 f"&Height=1080"

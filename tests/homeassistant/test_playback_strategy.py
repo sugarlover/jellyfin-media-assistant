@@ -243,3 +243,52 @@ def test_audio_stream_falls_back_to_first_audio_when_index_one_is_missing() -> N
     }
 
     assert ChromecastPlaybackStrategy.analyze_media(item)["audio_codec"] == "mp3"
+
+
+@pytest.mark.parametrize(
+    ("item", "device_model", "item_type", "start_position_ticks"),
+    [
+        (_video_item(), "Chromecast Ultra", "Movie", 12_345_678),
+        (_video_item(bit_depth=10), "Chromecast Ultra", "Episode", 0),
+        (
+            _audio_item(container="mp3", audio_codec="mp3"),
+            "Chromecast Ultra",
+            "Audio",
+            67_890_123,
+        ),
+    ],
+)
+def test_playback_info_appends_start_position_ticks(
+    item: dict[str, Any],
+    device_model: str,
+    item_type: str,
+    start_position_ticks: int,
+) -> None:
+    """Resume position is threaded to every stream URL variant, including 0."""
+    media_info = ChromecastPlaybackStrategy.analyze_media(item)
+    result = ChromecastPlaybackStrategy.get_playback_info(
+        "http://jellyfin:8096",
+        "secret-token",
+        "item-123",
+        media_info,
+        device_model,
+        item_type=item_type,
+        start_position_ticks=start_position_ticks,
+    )
+
+    assert f"StartPositionTicks={start_position_ticks}" in result["media_url"]
+    assert result["media_url"].count("StartPositionTicks") == 1
+
+
+def test_playback_info_omits_start_position_ticks_when_not_passed() -> None:
+    media_info = ChromecastPlaybackStrategy.analyze_media(_video_item())
+    result = ChromecastPlaybackStrategy.get_playback_info(
+        "http://jellyfin:8096",
+        "secret-token",
+        "item-123",
+        media_info,
+        "Chromecast Ultra",
+        item_type="Movie",
+    )
+
+    assert "StartPositionTicks" not in result["media_url"]

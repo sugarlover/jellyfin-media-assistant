@@ -217,3 +217,40 @@ def test_handler_speaks_validation_error_without_running_action(tmp_path: Path) 
 
     assert response.speech["plain"]["speech"] == "Please provide a valid result number."
     assert hass.services.calls == []
+
+
+def test_beginning_of_request_forces_start_position_zero() -> None:
+    """"Play the beginning of X" starts fresh: strip the prefix and pin ticks=0."""
+    call = build_voice_script_call(
+        "JellyfinAssistMoviePlay",
+        {
+            "movie_request": "The Beginning of Interstellar",
+            "media_player": "media_player.example_chromecast",
+        },
+    )
+    assert call.data["query"] == "Interstellar"
+    assert call.data["start_position_ticks"] == 0
+    assert call.data == {
+        "query": "Interstellar",
+        "media_type": "Movie",
+        "media_player": "media_player.example_chromecast",
+        "operation": "play",
+        "start_position_ticks": 0,
+    }
+
+
+def test_beginning_of_request_handles_lowercase_and_missing_the() -> None:
+    call = build_voice_script_call(
+        "JellyfinAssistMediaPlay",
+        {"media": "beginning of Inception"},
+    )
+    assert call.data["query"] == "Inception"
+    assert call.data["start_position_ticks"] == 0
+
+
+def test_plain_play_request_does_not_set_start_position() -> None:
+    call = build_voice_script_call(
+        "JellyfinAssistMoviePlay",
+        {"movie_request": "Interstellar"},
+    )
+    assert "start_position_ticks" not in call.data

@@ -45,6 +45,7 @@ from .const import (
     ATTR_SEASON,
     ATTR_SERIES,
     ATTR_SERIES_ID,
+    ATTR_START_POSITION_TICKS,
     ATTR_TYPE,
     ATTR_YEAR,
     DOMAIN,
@@ -1034,6 +1035,7 @@ async def async_handle_media_orchestrator(
         season=_clean_optional_int(call.data.get(ATTR_SEASON)),
         episode=_clean_optional_int(call.data.get(ATTR_EPISODE)),
         context=getattr(call, "context", None),
+        start_position_ticks=call.data.get(ATTR_START_POSITION_TICKS),
     )
 
 
