@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+from homeassistant.helpers.event import async_track_state_change_event
+
 from .playback_strategy import ChromecastPlaybackStrategy
 from .runtime import JellyfinAssistRuntime
 
@@ -205,6 +207,16 @@ async def async_play_on_chromecast(
         force_start_position_ticks=start_position_ticks,
     )
 
+    # D2: build_play_media_data already computes start_position_ticks
+    # (playback.py:125-133) from UserData.PlaybackPositionTicks. Thread
+    # it into the session dict so accumulated_playing_seconds starts
+    # at the resume offset instead of 0.
+    resume_offset_seconds = (
+        start_position_ticks / 10_000_000
+        if start_position_ticks is not None
+        else 0.0
+    )
+
     await hass.services.async_call(
         "media_player",
         "play_media",
@@ -237,9 +249,37 @@ async def async_play_on_chromecast(
         "item_id": prepared.item_id,
         "requested_item_id": prepared.requested_item_id,
         "duration_seconds": duration_seconds,
-        "accumulated_playing_seconds": 0.0,
+        "start_position_ticks": start_position_ticks,
+        "accumulated_playing_seconds": resume_offset_seconds,
         "playing_started_at": playing_started_at,
     }
+
+    # D4: if this target is not in the statically-configured playback
+    # targets, dynamically register a state-change listener so the
+    # session is tracked even for unlisted targets. The handler is the
+    # same one built for configured targets (advancement.py module-level
+    # factory), so sessions advance, pause-write, and off/idle pop just
+    # like a configured target. The listener is released on every pop
+    # path (handler-driven) plus at entry unload (registered in
+    # async_setup_queue_advancement), so nothing leaks.
+    if (
+        normalized_target not in runtime.playback_targets
+        and normalized_target not in runtime.playback_session_listeners
+    ):
+        entry = getattr(runtime, "_config_entry", None)
+        if entry is not None:
+            # Lazy import: advancement imports media_actions -> playback
+            # (this module) -> back to advancement would be a circular
+            # import at module load time. Deferring to call time avoids it.
+            from .advancement import _build_queue_advancement_handler
+
+            handler = _build_queue_advancement_handler(hass, entry, runtime)
+            unsubscribe = async_track_state_change_event(
+                hass,
+                [normalized_target],
+                handler,
+            )
+            runtime.playback_session_listeners[normalized_target] = unsubscribe
 
     return {
         "success": True,
@@ -254,6 +294,7 @@ async def async_play_on_chromecast(
         "legacy_chromecast": is_legacy,
         "playback_mode": playback_mode(playback_info),
         "media_content_type": playback_info["content_type"],
+        "start_position_ticks": start_position_ticks,
     }
 
 

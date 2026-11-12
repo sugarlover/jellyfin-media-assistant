@@ -131,7 +131,9 @@ def test_setup_entry_loads_configured_default_media_player(
         "media_player.example_chromecast",
         "media_player.example_secondary_chromecast",
     )
-    assert len(entry.unload_callbacks) == 2
+    # Three unload callbacks: D4 dynamic-listener release + state-change
+    # unsubscribe + periodic write sync.
+    assert len(entry.unload_callbacks) == 3
     assert entry.state_cache_clear_count == 1
     assert ("jellyfin_assist", "search") in hass.services.registered
 

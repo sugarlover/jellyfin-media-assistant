@@ -668,6 +668,7 @@ def test_native_playback_action_is_optional_response_and_does_not_call_jellyha(
         "legacy_chromecast": False,
         "playback_mode": "direct_play",
         "media_content_type": "video/mp4",
+        "start_position_ticks": None,
     }
     assert "secret" not in repr(response)
     assert len(hass.services.calls) == 1

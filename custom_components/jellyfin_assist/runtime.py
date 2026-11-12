@@ -36,6 +36,7 @@ class JellyfinAssistRuntime:
     queue_advancement_targets: tuple[str, ...] = ()
     last_queue_advancement: dict[str, Any] | None = None
     playback_sessions: dict[str, dict[str, Any]] = field(default_factory=dict)
+    playback_session_listeners: dict[str, Any] = field(default_factory=dict)
     voice_sentence_provisioning: "VoiceSentenceState | None" = None
     _config_entry: "Any | None" = field(default=None, repr=False)
     _hass: "Any | None" = field(default=None, repr=False)

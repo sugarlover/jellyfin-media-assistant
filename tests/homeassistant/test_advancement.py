@@ -18,6 +18,7 @@ install_homeassistant_stubs()
 
 from custom_components.jellyfin_assist.advancement import (
     _async_process_completion,
+    _build_queue_advancement_handler,
     _estimate_playback_percent,
     _extract_jellyfin_id,
     _session_playback_percent,
@@ -259,7 +260,9 @@ def test_setup_tracks_all_configured_playback_targets(
         "media_player.one",
         "media_player.two",
     )
-    assert len(entry.unload_callbacks) == 2
+    # Three unload callbacks: D4 dynamic-listener release + state-change
+    # unsubscribe + periodic write sync.
+    assert len(entry.unload_callbacks) == 3
     assert rt.queue_advancement_targets == (
         "media_player.one",
         "media_player.two",
@@ -831,8 +834,8 @@ def test_write_sync_on_pause_posts_tracked_position(tmp_path: Path) -> None:
     assert client.calls == [
         {
             "item_id": "abc123",
-            # 60s * 10_000 ticks/sec * 100 nano ticks
-            "position_ticks": 60.0 * 10_000 * 100,
+            # 60s * 10_000_000 ticks/sec
+            "position_ticks": 60.0 * 10_000_000,
             "is_paused": True,
             "device_id": "media_player.example",
         }
@@ -870,8 +873,8 @@ def test_write_sync_posts_live_in_progress_seconds_while_playing(
     assert client.calls == [
         {
             "item_id": "abc123",
-            # 90s of live elapsed * 10_000 ticks/sec * 100 nano ticks
-            "position_ticks": 90 * 10_000 * 100,
+            # 90s of live elapsed * 10_000_000 ticks/sec
+            "position_ticks": 90 * 10_000_000,
             "is_paused": False,
             "device_id": "media_player.example",
         }
@@ -948,7 +951,7 @@ def test_periodic_write_sync_writes_only_players_that_are_playing(
     assert client.calls == [
         {
             "item_id": "abc123",
-            "position_ticks": 90.0 * 10_000 * 100,
+            "position_ticks": 90.0 * 10_000_000,
             "is_paused": False,
             "device_id": "media_player.example",
         }
@@ -1083,3 +1086,520 @@ def test_runtime_trigger_reauth_starts_config_entry_reauth(
     run(client.auth_refresh())
 
     assert entry.reauth_triggered is True
+
+
+class SpyBackgroundEntry(FakeEntry):
+    """FakeEntry variant that keeps background coroutines alive so tests
+    can drive them and assert the write actually fires (FakeEntry closes
+    them immediately)."""
+
+    def async_create_background_task(
+        self,
+        hass: Any,
+        coro: Any,
+        name: str,
+    ) -> None:
+        self.background_tasks.append((name, coro))
+
+
+def _drive_state_change(
+    hass: FakeHass,
+    old_state: Any,
+    new_state: Any,
+) -> None:
+    """Invoke the registered state-change action with a minimal event."""
+
+    action = hass.tracked_state_changes[0][1]
+    event = SimpleNamespace(
+        data={
+            "entity_id": "media_player.example",
+            "old_state": old_state,
+            "new_state": new_state,
+        }
+    )
+    action(event)
+
+
+def _drive_background_tasks(entry: SpyBackgroundEntry) -> None:
+    """Drive and drain every recorded background coroutine."""
+
+    for _name, coro in entry.background_tasks:
+        run(coro)
+
+
+def test_final_write_fires_on_off(tmp_path: Path) -> None:
+    """D3: off transition fires a final write (is_paused=True) before the
+    session is popped."""
+
+    client = RecordingPlayingClient()
+    rt = runtime_with_client(client)
+    rt.playback_sessions["media_player.example"] = _session(
+        duration_seconds=180.0,
+        accumulated_playing_seconds=60.0,
+    )
+    hass = FakeHass(tmp_path)
+    entry = SpyBackgroundEntry("entry", {})
+
+    async_setup_queue_advancement(hass, entry, rt)
+
+    old_state = SimpleNamespace(
+        entity_id="media_player.example",
+        state="playing",
+        last_changed=datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc),
+        attributes={},
+    )
+    new_state = SimpleNamespace(
+        entity_id="media_player.example",
+        state="off",
+        last_changed=datetime(2026, 8, 8, 12, 1, tzinfo=timezone.utc),
+        attributes={},
+    )
+
+    _drive_state_change(hass, old_state, new_state)
+
+    # Session popped on off.
+    assert "media_player.example" not in rt.playback_sessions
+    # A play-sync background task was scheduled.
+    assert any(
+        "play sync" in name for name, _coro in entry.background_tasks
+    )
+
+    # Drive the tasks: the final write fires with the freshly-updated
+    # position. _update_playback_session folded in the 60s transition
+    # delta (transition_at - old_state.last_changed) before the snapshot,
+    # so accumulated = 60 + 60 = 120s, is_paused=True.
+    _drive_background_tasks(entry)
+    assert client.calls == [
+        {
+            "item_id": "abc123",
+            "position_ticks": 120.0 * 10_000_000,
+            "is_paused": True,
+            "device_id": "media_player.example",
+        }
+    ]
+
+
+def test_final_write_fires_on_unavailable(tmp_path: Path) -> None:
+    """D3: unavailable transition fires a final write before the session
+    is popped."""
+
+    client = RecordingPlayingClient()
+    rt = runtime_with_client(client)
+    rt.playback_sessions["media_player.example"] = _session(
+        duration_seconds=180.0,
+        accumulated_playing_seconds=45.0,
+    )
+    hass = FakeHass(tmp_path)
+    entry = SpyBackgroundEntry("entry", {})
+
+    async_setup_queue_advancement(hass, entry, rt)
+
+    old_state = SimpleNamespace(
+        entity_id="media_player.example",
+        state="playing",
+        last_changed=datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc),
+        attributes={},
+    )
+    new_state = SimpleNamespace(
+        entity_id="media_player.example",
+        state="unavailable",
+        last_changed=datetime(2026, 8, 8, 12, 1, tzinfo=timezone.utc),
+        attributes={},
+    )
+
+    _drive_state_change(hass, old_state, new_state)
+
+    assert "media_player.example" not in rt.playback_sessions
+    assert any(
+        "play sync" in name for name, _coro in entry.background_tasks
+    )
+
+    # _update_playback_session folded in the 60s transition delta before
+    # the snapshot, so accumulated = 45 + 60 = 105s, is_paused=True.
+    _drive_background_tasks(entry)
+    assert client.calls == [
+        {
+            "item_id": "abc123",
+            "position_ticks": 105.0 * 10_000_000,
+            "is_paused": True,
+            "device_id": "media_player.example",
+        }
+    ]
+
+
+def test_final_write_fires_on_non_completion_idle(tmp_path: Path) -> None:
+    """D3: a non-completion idle transition (old_state not playing) fires a
+    final write before the session is popped."""
+
+    client = RecordingPlayingClient()
+    rt = runtime_with_client(client)
+    rt.playback_sessions["media_player.example"] = _session(
+        duration_seconds=180.0,
+        accumulated_playing_seconds=30.0,
+    )
+    hass = FakeHass(tmp_path)
+    entry = SpyBackgroundEntry("entry", {})
+
+    async_setup_queue_advancement(hass, entry, rt)
+
+    # old_state is NOT playing -> the non-completion idle path.
+    old_state = SimpleNamespace(
+        entity_id="media_player.example",
+        state="paused",
+        last_changed=datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc),
+        attributes={},
+    )
+    new_state = SimpleNamespace(
+        entity_id="media_player.example",
+        state="idle",
+        last_changed=datetime(2026, 8, 8, 12, 1, tzinfo=timezone.utc),
+        attributes={},
+    )
+
+    _drive_state_change(hass, old_state, new_state)
+
+    assert "media_player.example" not in rt.playback_sessions
+    assert any(
+        "play sync" in name for name, _coro in entry.background_tasks
+    )
+
+    _drive_background_tasks(entry)
+    assert client.calls == [
+        {
+            "item_id": "abc123",
+            "position_ticks": 30.0 * 10_000_000,
+            "is_paused": True,
+            "device_id": "media_player.example",
+        }
+    ]
+
+
+def test_completing_idle_does_not_double_write(tmp_path: Path) -> None:
+    """D3: a completing playing->idle transition routes to the completion
+    path, not the final-write path — no play-sync task is scheduled."""
+
+    client = RecordingPlayingClient()
+    rt = runtime_with_client(client)
+    rt.playback_sessions["media_player.example"] = _session(
+        duration_seconds=100.0,
+        accumulated_playing_seconds=100.0,
+    )
+    hass = FakeHass(tmp_path)
+    entry = SpyBackgroundEntry("entry", {})
+
+    async_setup_queue_advancement(hass, entry, rt)
+
+    old_state, new_state = media_states()
+
+    _drive_state_change(hass, old_state, new_state)
+
+    # No play-sync task on the completion path.
+    assert not any(
+        "play sync" in name for name, _coro in entry.background_tasks
+    )
+
+
+# ---------------------------------------------------------------------------
+# D4: dynamic listener release for unlisted targets
+# ---------------------------------------------------------------------------
+
+
+class FakeDynamicUnsubscribe:
+    """Stand-in for the HA state-change unsubscribe callback."""
+
+    def __init__(self) -> None:
+        self.called = 0
+
+    def __call__(self) -> None:
+        self.called += 1
+
+
+def _register_dynamic_listener(
+    rt: JellyfinAssistRuntime,
+    player: str,
+) -> FakeDynamicUnsubscribe:
+    """Register a fake dynamic listener for an unlisted target in the
+    runtime and return the fake unsubscribe so tests can assert on it."""
+
+    unsubscribe = FakeDynamicUnsubscribe()
+    rt.playback_session_listeners[player] = unsubscribe
+    return unsubscribe
+
+
+def _drive_unlisted_state_change(
+    hass: FakeHass,
+    entry: SpyBackgroundEntry,
+    rt: JellyfinAssistRuntime,
+    player: str,
+    old_state: Any,
+    new_state: Any,
+) -> None:
+    """Drive a state change through the handler built by
+    _build_queue_advancement_handler for an unlisted target."""
+
+    handler = _build_queue_advancement_handler(hass, entry, rt)
+    event = SimpleNamespace(
+        data={
+            "entity_id": player,
+            "old_state": old_state,
+            "new_state": new_state,
+        }
+    )
+    handler(event)
+
+
+def test_d4_listener_released_on_off(tmp_path: Path) -> None:
+    """D4: the dynamic listener is released when the session pops on off."""
+
+    client = RecordingPlayingClient()
+    rt = runtime_with_client(client)
+    player = "media_player.unlisted"
+    rt.playback_sessions[player] = _session(
+        duration_seconds=180.0,
+        accumulated_playing_seconds=60.0,
+    )
+    unsubscribe = _register_dynamic_listener(rt, player)
+    hass = FakeHass(tmp_path)
+    entry = SpyBackgroundEntry("entry", {})
+
+    old_state = SimpleNamespace(
+        entity_id=player,
+        state="playing",
+        last_changed=datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc),
+        attributes={},
+    )
+    new_state = SimpleNamespace(
+        entity_id=player,
+        state="off",
+        last_changed=datetime(2026, 8, 8, 12, 1, tzinfo=timezone.utc),
+        attributes={},
+    )
+
+    _drive_unlisted_state_change(
+        hass, entry, rt, player, old_state, new_state
+    )
+    _drive_background_tasks(entry)
+
+    # Session popped.
+    assert player not in rt.playback_sessions
+    # Listener released exactly once.
+    assert player not in rt.playback_session_listeners
+    assert unsubscribe.called == 1
+
+
+def test_d4_listener_released_on_unavailable(tmp_path: Path) -> None:
+    """D4: the dynamic listener is released when the session pops on
+    unavailable."""
+
+    client = RecordingPlayingClient()
+    rt = runtime_with_client(client)
+    player = "media_player.unlisted"
+    rt.playback_sessions[player] = _session(
+        duration_seconds=180.0,
+        accumulated_playing_seconds=45.0,
+    )
+    unsubscribe = _register_dynamic_listener(rt, player)
+    hass = FakeHass(tmp_path)
+    entry = SpyBackgroundEntry("entry", {})
+
+    old_state = SimpleNamespace(
+        entity_id=player,
+        state="playing",
+        last_changed=datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc),
+        attributes={},
+    )
+    new_state = SimpleNamespace(
+        entity_id=player,
+        state="unavailable",
+        last_changed=datetime(2026, 8, 8, 12, 1, tzinfo=timezone.utc),
+        attributes={},
+    )
+
+    _drive_unlisted_state_change(
+        hass, entry, rt, player, old_state, new_state
+    )
+    _drive_background_tasks(entry)
+
+    assert player not in rt.playback_sessions
+    assert player not in rt.playback_session_listeners
+    assert unsubscribe.called == 1
+
+
+def test_d4_listener_released_on_non_completion_idle(tmp_path: Path) -> None:
+    """D4: the dynamic listener is released when the session pops on a
+    non-completion idle (old_state not playing)."""
+
+    client = RecordingPlayingClient()
+    rt = runtime_with_client(client)
+    player = "media_player.unlisted"
+    rt.playback_sessions[player] = _session(
+        duration_seconds=180.0,
+        accumulated_playing_seconds=30.0,
+    )
+    unsubscribe = _register_dynamic_listener(rt, player)
+    hass = FakeHass(tmp_path)
+    entry = SpyBackgroundEntry("entry", {})
+
+    old_state = SimpleNamespace(
+        entity_id=player,
+        state="paused",
+        last_changed=datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc),
+        attributes={},
+    )
+    new_state = SimpleNamespace(
+        entity_id=player,
+        state="idle",
+        last_changed=datetime(2026, 8, 8, 12, 1, tzinfo=timezone.utc),
+        attributes={},
+    )
+
+    _drive_unlisted_state_change(
+        hass, entry, rt, player, old_state, new_state
+    )
+    _drive_background_tasks(entry)
+
+    assert player not in rt.playback_sessions
+    assert player not in rt.playback_session_listeners
+    assert unsubscribe.called == 1
+
+
+def test_d4_listener_released_on_completion(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """D4: the dynamic listener is released on a confirmed completion
+    (playing->idle with a verifiable queue item)."""
+
+    class QueueClient:
+        def __init__(self) -> None:
+            self.next_calls = 0
+
+        async def async_get(self, pname: str) -> dict[str, Any]:
+            return {
+                "status": 200,
+                "content": {
+                    "success": True,
+                    "current": {"id": "abc123", "name": "Example Item"},
+                },
+                "headers": {},
+            }
+
+        async def async_next(self, pname: str) -> dict[str, Any]:
+            self.next_calls += 1
+            return {
+                "status": 200,
+                "content": {
+                    "success": True,
+                    "current": None,
+                    "upcoming_count": 0,
+                    "completed": {"id": "abc123"},
+                },
+                "headers": {},
+            }
+
+    queue = QueueClient()
+    rt = runtime(queue)
+    player = "media_player.unlisted"
+    rt.playback_sessions[player] = _session(
+        duration_seconds=100.0,
+        accumulated_playing_seconds=100.0,
+    )
+    unsubscribe = _register_dynamic_listener(rt, player)
+    hass = FakeHass(tmp_path)
+    entry = SpyBackgroundEntry("entry", {})
+
+    old_state, new_state = media_states()
+    # Point the states at the unlisted player so the handler's pop site
+    # matches the registered listener.
+    old_state.entity_id = player
+    new_state.entity_id = player
+
+    async def play(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {"success": True, "status": "playing"}
+
+    monkeypatch.setattr(
+        "custom_components.jellyfin_assist.advancement.async_play_item",
+        play,
+    )
+
+    # Drive the state change to schedule the completion task.
+    _drive_unlisted_state_change(
+        hass, entry, rt, player, old_state, new_state
+    )
+    # Drive the scheduled background completion task.
+    _drive_background_tasks(entry)
+
+    # Confirmed completion pops the session and releases the listener.
+    assert player not in rt.playback_sessions
+    assert player not in rt.playback_session_listeners
+    assert unsubscribe.called == 1
+
+
+def test_d4_listener_not_released_on_pause(tmp_path: Path) -> None:
+    """D4: a pause transition (no pop) does NOT release the dynamic
+    listener — the session is still alive."""
+
+    client = RecordingPlayingClient()
+    rt = runtime_with_client(client)
+    player = "media_player.unlisted"
+    rt.playback_sessions[player] = _session(
+        duration_seconds=180.0,
+        accumulated_playing_seconds=60.0,
+    )
+    unsubscribe = _register_dynamic_listener(rt, player)
+    hass = FakeHass(tmp_path)
+    entry = SpyBackgroundEntry("entry", {})
+
+    started = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
+    paused_at = started + timedelta(seconds=60)
+    old_state = SimpleNamespace(
+        entity_id=player,
+        state="playing",
+        last_changed=started,
+        attributes={},
+    )
+    new_state = SimpleNamespace(
+        entity_id=player,
+        state="paused",
+        last_changed=paused_at,
+        attributes={},
+    )
+
+    _drive_unlisted_state_change(
+        hass, entry, rt, player, old_state, new_state
+    )
+
+    # Session still alive; listener NOT released.
+    assert player in rt.playback_sessions
+    assert player in rt.playback_session_listeners
+    assert unsubscribe.called == 0
+
+
+def test_d4_unload_releases_all_dynamic_listeners(tmp_path: Path) -> None:
+    """D4: the unload callback registered in async_setup_queue_advancement
+    releases every dynamic listener for unlisted targets."""
+
+    client = RecordingPlayingClient()
+    rt = runtime_with_client(client)
+    hass = FakeHass(tmp_path)
+    entry = SpyBackgroundEntry("entry", {})
+
+    async_setup_queue_advancement(hass, entry, rt)
+
+    # Simulate two unlisted targets having dynamic listeners registered.
+    unlisted_a = "media_player.unlisted_a"
+    unlisted_b = "media_player.unlisted_b"
+    unsubscribe_a = FakeDynamicUnsubscribe()
+    unsubscribe_b = FakeDynamicUnsubscribe()
+    rt.playback_session_listeners[unlisted_a] = unsubscribe_a
+    rt.playback_session_listeners[unlisted_b] = unsubscribe_b
+
+    # The unload callback (registered by async_setup_queue_advancement)
+    # must release every dynamic listener.
+    for callback in entry.unload_callbacks:
+        callback()
+
+    assert unlisted_a not in rt.playback_session_listeners
+    assert unlisted_b not in rt.playback_session_listeners
+    assert unsubscribe_a.called == 1
+    assert unsubscribe_b.called == 1
