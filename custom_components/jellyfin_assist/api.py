@@ -28,7 +28,8 @@ JELLYHA_GET_ITEM_FIELDS = (
 )
 
 JELLYHA_NEXT_UP_FIELDS = (
-    "MediaSources,MediaStreams,Overview,RunTimeTicks,OfficialRating,CommunityRating"
+    "MediaSources,MediaStreams,Overview,RunTimeTicks,OfficialRating,CommunityRating,"
+    "UserData,SeasonUserData"
 )
 
 
