@@ -77,6 +77,7 @@ class JellyfinApiClient:
     verify_ssl: bool = True
     timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
     user_id: str = ""
+    user_token: str = field(repr=False, default="")
 
     def __post_init__(self) -> None:
         self.server_url = normalize_server_url(self.server_url)
@@ -90,17 +91,24 @@ class JellyfinApiClient:
 
     @property
     def _headers(self) -> dict[str, str]:
-        """Return Jellyfin headers without exposing the token in diagnostics."""
+        """Return Jellyfin headers without exposing the token in diagnostics.
 
+        A user-bound access token (minted via ``POST /Users/{uid}/Authenticate``)
+        is sent in preference to the bare server API key so the session resolves
+        to a real user. Without a token the API key is used (read-only reads
+        still work; position persistence would not).
+        """
+
+        token = self.user_token.strip() or self.api_key
         return {
             "Accept": "application/json",
-            "X-Emby-Token": self.api_key,
+            "X-Emby-Token": token,
             "Authorization": (
                 f'MediaBrowser Client="{NAME}", '
                 'Device="Home Assistant", '
                 'DeviceId="jellyfin-assist", '
                 f'Version="{VERSION}", '
-                f'Token="{self.api_key}"'
+                f'Token="{token}"'
             ),
         }
 
@@ -113,59 +121,84 @@ class JellyfinApiClient:
         """Execute one JellyHA-compatible request.
 
         All methods are restricted to GET except the single allowed
-        write endpoint: POST /Users/{userId}/PlayingItems.
+        write endpoint: POST /Users/{userId}/PlayingItems/{itemId}/Progress.
         """
 
         normalized_method = method.upper()
         if normalized_method == "POST":
-            # The only permitted write: user-scoped playback position.
-            expected = f"/Users/{quote(self.user_id, safe='')}/PlayingItems"
-            if endpoint.lstrip("/") != expected.lstrip("/"):
+            # The only permitted write: user-scoped playback progress.
+            expected = (
+                f"/Users/{quote(self.user_id, safe='')}"
+                f"/PlayingItems/{quote(kwargs.get('_item_id', ''), safe='')}"
+                "/Progress"
+            )
+            endpoint_path = endpoint.lstrip("/")
+            if not endpoint_path.startswith(expected.lstrip("/")):
                 raise JellyfinApiError(
                     "Jellyfin Media Assistant blocks non-GET requests"
                 )
-            unexpected = set(kwargs) - {"json"}
+            unexpected = set(kwargs) - {"params", "_item_id", "_async_auth_refresh"}
             if unexpected:
                 names = ", ".join(sorted(unexpected))
                 raise JellyfinApiError(
                     f"Unsupported write request options: {names}"
                 )
-            url = f"{self.server_url}/{endpoint.lstrip('/')}"
-            try:
-                async with self.session.post(
-                    url,
-                    json=kwargs.get("json"),
-                    headers=self._headers,
-                    ssl=self.verify_ssl,
-                    timeout=ClientTimeout(total=self.timeout_seconds),
-                ) as response:
-                    if response.status in {401, 403}:
-                        raise JellyfinAuthenticationError(
-                            "Jellyfin rejected the API key or user access"
-                        )
-                    if response.status >= 500:
-                        raise JellyfinConnectionError(
-                            f"Jellyfin returned temporary HTTP {response.status}"
-                        )
-                    if response.status >= 400:
-                        body = (await response.text())[:300]
-                        raise JellyfinInvalidResponseError(
-                            f"Jellyfin returned HTTP {response.status}: {body}"
-                        )
-                    if response.status == 204:
-                        return None
-                    try:
-                        return await response.json(content_type=None)
-                    except (ClientResponseError, json.JSONDecodeError, ValueError) as err:
-                        raise JellyfinInvalidResponseError(
-                            "Jellyfin returned invalid JSON"
-                        ) from err
-            except JellyfinApiError:
-                raise
-            except TimeoutError as err:
-                raise JellyfinConnectionError("Jellyfin request timed out") from err
-            except ClientError as err:
-                raise JellyfinConnectionError("Could not reach Jellyfin") from err
+            url = f"{self.server_url}/{endpoint_path}"
+            params = kwargs.get("params") or {}
+            _async_auth_refresh = kwargs.get("_async_auth_refresh")
+            refresh_attempts = 0
+            while True:
+                try:
+                    async with self.session.post(
+                        url,
+                        params=params,
+                        headers=self._headers,
+                        ssl=self.verify_ssl,
+                        timeout=ClientTimeout(total=self.timeout_seconds),
+                    ) as response:
+                        if response.status == 401 and (
+                            _async_auth_refresh is not None and refresh_attempts == 0
+                        ):
+                            # The stored user token expired; mint a fresh one and
+                            # retry once before surfacing an auth failure.
+                            refresh_attempts += 1
+                            await _async_auth_refresh()
+                            continue
+                        if response.status in {401, 403}:
+                            raise JellyfinAuthenticationError(
+                                "Jellyfin rejected the API key or user access"
+                            )
+                        if response.status >= 500:
+                            raise JellyfinConnectionError(
+                                f"Jellyfin returned temporary HTTP {response.status}"
+                            )
+                        if response.status >= 400:
+                            body = (await response.text())[:300]
+                            raise JellyfinInvalidResponseError(
+                                f"Jellyfin returned HTTP {response.status}: {body}"
+                            )
+                        if response.status == 204:
+                            return None
+                        try:
+                            return await response.json(content_type=None)
+                        except (
+                            ClientResponseError,
+                            json.JSONDecodeError,
+                            ValueError,
+                        ) as err:
+                            raise JellyfinInvalidResponseError(
+                                "Jellyfin returned invalid JSON"
+                            ) from err
+                except JellyfinApiError:
+                    raise
+                except TimeoutError as err:
+                    raise JellyfinConnectionError(
+                        "Jellyfin request timed out"
+                    ) from err
+                except ClientError as err:
+                    raise JellyfinConnectionError(
+                        "Could not reach Jellyfin"
+                    ) from err
 
         if normalized_method != "GET":
             raise JellyfinApiError("Jellyfin Media Assistant blocks non-GET requests")
@@ -339,8 +372,16 @@ class JellyfinApiClient:
         position_ticks: int,
         is_paused: bool,
         device_id: str = "jellyfin-assist",
+        _async_auth_refresh: Any = None,
     ) -> None:
-        """Report playback position to the Jellyfin server (POST PlayingItems)."""
+        """Report playback position via the real progress route.
+
+        POST /Users/{userId}/PlayingItems/{itemId}/Progress?positionTicks=…&isPaused=…
+        (response is 204 No Content).
+
+        :param _async_auth_refresh: optional zero-arg async callable that mints a
+            fresh ``user_token`` and updates :attr:`self`; invoked once on a 401.
+        """
 
         normalized_item_id = item_id.strip()
         if not normalized_item_id:
@@ -348,17 +389,89 @@ class JellyfinApiClient:
         if position_ticks < 0:
             raise ValueError("PositionTicks cannot be negative")
 
-        payload = {
-            "PositionTicks": position_ticks,
-            "IsPaused": is_paused,
-            "ItemId": normalized_item_id,
-            "DeviceId": device_id,
-        }
         await self._request(
             "POST",
-            f"/Users/{quote(self.user_id, safe='')}/PlayingItems",
-            json=payload,
+            f"/Users/{quote(self.user_id, safe='')}"
+            f"/PlayingItems/{quote(normalized_item_id, safe='')}/Progress",
+            params={
+                "positionTicks": str(position_ticks),
+                "isPaused": "true" if is_paused else "false",
+            },
+            _item_id=normalized_item_id,
+            _async_auth_refresh=_async_auth_refresh,
         )
+
+    async def async_get_user_access_token(
+        self,
+        user_id: str,
+        pwp: str,
+    ) -> str:
+        """Mint a user-bound device/access token for this user.
+
+        POST /Users/{user_id}/Authenticate with ``{"Pw": <password>}``. Jellyfin
+        answers with the per-user access token in the ``Access-Token`` response
+        header. Unlike the bare server API key, this token binds a real user, so
+        the playback-progress session resolves to a user and ``SaveUserData``
+        runs server-side.
+        """
+
+        normalized_user_id = user_id.strip()
+        if not normalized_user_id:
+            raise ValueError("Jellyfin user ID is required")
+        if not pwp.strip():
+            raise ValueError("Jellyfin user password is required")
+
+        # Authenticate is a distinct POST that is NOT the playing-items route, so
+        # it cannot go through ``_request`` (whose guard allows only that route).
+        # It is authenticated with the server API key; the returned token is what
+        # later requests send.
+        url = (
+            f"{self.server_url}"
+            f"/Users/{quote(normalized_user_id, safe='')}/Authenticate"
+        )
+        headers = {
+            "Accept": "application/json",
+            "Authorization": (
+                f'MediaBrowser Client="{NAME}", '
+                'Device="Home Assistant", '
+                'DeviceId="jellyfin-assist", '
+                f'Version="{VERSION}", '
+                f'Token="{self.api_key}"'
+            ),
+        }
+        try:
+            async with self.session.post(
+                url,
+                json={"Pw": pwp},
+                headers=headers,
+                ssl=self.verify_ssl,
+                timeout=ClientTimeout(total=self.timeout_seconds),
+            ) as response:
+                if response.status in {401, 403}:
+                    raise JellyfinAuthenticationError(
+                        "Jellyfin rejected the user password"
+                    )
+                if response.status >= 500:
+                    raise JellyfinConnectionError(
+                        f"Jellyfin returned temporary HTTP {response.status}"
+                    )
+                if response.status >= 400:
+                    body = (await response.text())[:300]
+                    raise JellyfinInvalidResponseError(
+                        f"Jellyfin returned HTTP {response.status}: {body}"
+                    )
+                access_token = response.headers.get("Access-Token", "")
+                if not access_token:
+                    raise JellyfinInvalidResponseError(
+                        "Jellyfin did not return an access token"
+                    )
+                return access_token
+        except JellyfinApiError:
+            raise
+        except TimeoutError as err:
+            raise JellyfinConnectionError("Jellyfin request timed out") from err
+        except ClientError as err:
+            raise JellyfinConnectionError("Could not reach Jellyfin") from err
 
     def get_image_url(
         self,

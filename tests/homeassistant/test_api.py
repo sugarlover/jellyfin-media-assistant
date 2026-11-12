@@ -23,10 +23,11 @@ def run(coro: Any) -> Any:
 
 
 class FakeResponse:
-    def __init__(self, status: int, payload: Any, text: str = "") -> None:
+    def __init__(self, status: int, payload: Any, text: str = "", headers: Any = None) -> None:
         self.status = status
         self.payload = payload
         self._text = text
+        self.headers = headers or {}
 
     async def __aenter__(self) -> "FakeResponse":
         return self
@@ -49,7 +50,11 @@ class FakeSession:
         self.calls: list[dict[str, Any]] = []
 
     def get(self, url: str, **kwargs: Any) -> FakeResponse:
-        self.calls.append({"url": url, **kwargs})
+        self.calls.append({"method": "GET", "url": url, **kwargs})
+        return next(self.responses)
+
+    def post(self, url: str, **kwargs: Any) -> FakeResponse:
+        self.calls.append({"method": "POST", "url": url, **kwargs})
         return next(self.responses)
 
 
@@ -266,3 +271,226 @@ def test_whole_series_api_query_preserves_episode_metadata() -> None:
     assert params["SortOrder"] == "Ascending"
     assert "ParentIndexNumber" not in params
     assert "IndexNumber" not in params
+
+
+def test_post_playing_items_uses_real_progress_route_and_params() -> None:
+    session = FakeSession([FakeResponse(204, None)])
+    client = JellyfinApiClient(
+        session, "http://host", "secret", user_id="user-1", user_token="usertoken"
+    )
+
+    result = run(
+        client.async_post_playing_items(
+            item_id="item/1",
+            position_ticks=10510625055,
+            is_paused=True,
+        )
+    )
+
+    # 204 No Content is treated as success and returns None.
+    assert result is None
+    call = session.calls[0]
+    assert call["method"] == "POST"
+    assert call["url"] == (
+        "http://host/Users/user-1/PlayingItems/item%2F1/Progress"
+    )
+    # Query params, not a JSON body: positionTicks + isPaused.
+    assert call["params"] == {
+        "positionTicks": "10510625055",
+        "isPaused": "true",
+    }
+    assert "json" not in call
+
+
+def test_post_playing_items_is_paused_false_encodes_false() -> None:
+    session = FakeSession([FakeResponse(204, None)])
+    client = JellyfinApiClient(
+        session, "http://host", "secret", user_id="user-1", user_token="usertoken"
+    )
+
+    run(
+        client.async_post_playing_items(
+            item_id="item-1",
+            position_ticks=500000000,
+            is_paused=False,
+        )
+    )
+
+    assert session.calls[0]["params"] == {
+        "positionTicks": "500000000",
+        "isPaused": "false",
+    }
+
+
+def test_post_playing_items_rejects_wrong_route() -> None:
+    client = JellyfinApiClient(
+        FakeSession([]), "http://host", "secret", user_id="user-1"
+    )
+
+    with pytest.raises(JellyfinApiError, match="blocks non-GET"):
+        run(client._request("POST", "/Users/user-1/PlayingItems", params={}))
+
+
+def test_post_playing_items_rejects_unexpected_options() -> None:
+    client = JellyfinApiClient(
+        FakeSession([]), "http://host", "secret", user_id="user-1"
+    )
+
+    with pytest.raises(JellyfinApiError, match="Unsupported write"):
+        run(
+            client._request(
+                "POST",
+                "/Users/user-1/PlayingItems/item-1/Progress",
+                params={},
+                _item_id="item-1",
+                json={"x": 1},
+            )
+        )
+
+
+def test_headers_prefer_user_token_over_api_key() -> None:
+    client = JellyfinApiClient(
+        FakeSession([]), "http://host", "secret", user_token="usertoken"
+    )
+
+    headers = client._headers
+    assert headers["X-Emby-Token"] == "usertoken"
+    assert 'Token="usertoken"' in headers["Authorization"]
+
+
+def test_headers_fall_back_to_api_key_without_token() -> None:
+    client = JellyfinApiClient(FakeSession([]), "http://host", "secret")
+
+    headers = client._headers
+    assert headers["X-Emby-Token"] == "secret"
+    assert 'Token="secret"' in headers["Authorization"]
+
+
+def test_post_playing_items_refreshes_token_once_on_401() -> None:
+    refresh_calls = {"count": 0}
+
+    async def refresh() -> None:
+        refresh_calls["count"] += 1
+        client.user_token = "newtoken"
+
+    session = FakeSession(
+        [
+            FakeResponse(401, None),
+            FakeResponse(204, None),
+        ]
+    )
+    client = JellyfinApiClient(
+        session, "http://host", "secret", user_id="user-1", user_token="stale"
+    )
+
+    run(
+        client.async_post_playing_items(
+            item_id="item-1",
+            position_ticks=500,
+            is_paused=True,
+            _async_auth_refresh=refresh,
+        )
+    )
+
+    # Exactly one refresh attempt, then a successful retry (204).
+    assert refresh_calls["count"] == 1
+    assert len(session.calls) == 2
+    assert session.calls[0]["headers"]["X-Emby-Token"] == "stale"
+    assert session.calls[1]["headers"]["X-Emby-Token"] == "newtoken"
+
+
+def test_post_playing_items_raises_auth_error_when_401_without_refresh() -> None:
+    session = FakeSession([FakeResponse(401, None)])
+    client = JellyfinApiClient(
+        session, "http://host", "secret", user_id="user-1", user_token="stale"
+    )
+
+    with pytest.raises(JellyfinAuthenticationError):
+        run(
+            client.async_post_playing_items(
+                item_id="item-1",
+                position_ticks=500,
+                is_paused=True,
+            )
+        )
+
+
+def test_post_playing_items_401_only_retried_once_not_loop() -> None:
+    refresh_calls = {"count": 0}
+
+    async def refresh() -> None:
+        refresh_calls["count"] += 1
+        client.user_token = "still-401"
+
+    session = FakeSession(
+        [
+            FakeResponse(401, None),
+            FakeResponse(401, None),
+        ]
+    )
+    client = JellyfinApiClient(
+        session, "http://host", "secret", user_id="user-1", user_token="stale"
+    )
+
+    with pytest.raises(JellyfinAuthenticationError):
+        run(
+            client.async_post_playing_items(
+                item_id="item-1",
+                position_ticks=500,
+                is_paused=True,
+                _async_auth_refresh=refresh,
+            )
+        )
+
+    # One refresh then one final 401 — no infinite loop.
+    assert refresh_calls["count"] == 1
+    assert len(session.calls) == 2
+
+
+def test_get_user_access_token_reads_access_token_header() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(200, None, headers={"Access-Token": "fresh-token"})
+        ]
+    )
+    client = JellyfinApiClient(session, "http://host", "secret")
+
+    token = run(client.async_get_user_access_token("user-1", "p4ss"))
+
+    assert token == "fresh-token"
+    call = session.calls[0]
+    assert call["method"] == "POST"
+    assert call["url"] == "http://host/Users/user-1/Authenticate"
+    assert call["json"] == {"Pw": "p4ss"}
+
+
+def test_get_user_access_token_rejects_missing_token() -> None:
+    session = FakeSession([FakeResponse(200, None, headers={})])
+    client = JellyfinApiClient(session, "http://host", "secret")
+
+    with pytest.raises(JellyfinInvalidResponseError, match="access token"):
+        run(client.async_get_user_access_token("user-1", "p4ss"))
+
+
+def test_get_user_access_token_rejects_bad_password() -> None:
+    session = FakeSession([FakeResponse(401, None)])
+    client = JellyfinApiClient(session, "http://host", "secret")
+
+    with pytest.raises(JellyfinAuthenticationError, match="password"):
+        run(client.async_get_user_access_token("user-1", "nope"))
+
+
+def test_post_blocks_route_without_user_prefix() -> None:
+    # A POST to a route that lacks the /Users/{uid}/PlayingItems/{id}/Progress
+    # prefix is blocked even when _item_id is supplied.
+    client = JellyfinApiClient(FakeSession([]), "http://host", "secret", user_id="u1")
+
+    with pytest.raises(JellyfinApiError, match="blocks non-GET"):
+        run(
+            client._request(
+                "POST",
+                "/PlayingItems/item-1/Progress",
+                params={},
+                _item_id="item-1",
+            )
+        )
