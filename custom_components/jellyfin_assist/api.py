@@ -88,6 +88,21 @@ class JellyfinApiClient:
             raise ValueError("verify_ssl must be a boolean")
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
+        self.user_token = self.user_token.strip()
+
+    def __repr__(self) -> str:
+        """Redacted representation: the API key and user token are never shown."""
+
+        return (
+            f"{type(self).__name__}("
+            f"server_url={self.server_url!r}, "
+            f"user_id={self.user_id!r}, "
+            f"verify_ssl={self.verify_ssl!r}, "
+            f"api_key=[REDACTED], "
+            f"user_token=[REDACTED])"
+        )
+
+    __str__ = __repr__
 
     @property
     def _headers(self) -> dict[str, str]:

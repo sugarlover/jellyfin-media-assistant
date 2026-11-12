@@ -215,6 +215,9 @@ class ConfigFlow:
             "errors": errors,
         }
 
+    def async_abort(self, *, reason: str) -> dict[str, Any]:
+        return {"type": "abort", "reason": reason}
+
 
 def install_homeassistant_stubs() -> None:
     """Install only the HA modules imported by this integration."""
@@ -573,3 +576,28 @@ class FakeEntry:
 
     def async_on_unload(self, callback: Any) -> None:
         self.unload_callbacks.append(callback)
+
+    def async_update_entry(
+        self,
+        *,
+        data: dict[str, Any] | None = None,
+        options: dict[str, Any] | None = None,
+        version: int | None = None,
+        minor_version: int | None = None,
+    ) -> None:
+        if data is not None:
+            self.data = dict(data)
+        if options is not None:
+            self.options = dict(options)
+        if version is not None:
+            self.version = version
+        if minor_version is not None:
+            self.minor_version = minor_version
+        self.update_count += 1
+
+    def async_start_reauth(self, hass: Any) -> None:
+        self._reauth_triggered = True
+
+    @property
+    def reauth_triggered(self) -> bool:
+        return getattr(self, "_reauth_triggered", False)

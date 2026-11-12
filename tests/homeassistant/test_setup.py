@@ -438,3 +438,66 @@ def test_remove_final_entry_preserves_user_modified_voice_sentences(
 
     assert sentence_file.read_text(encoding="utf-8") == "language: en\n# keep me\n"
     assert "jellyfin_assist.voice_sentences" not in hass.storage
+
+
+def test_setup_entry_passes_user_token_to_client_and_binds_entry(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """The persistent user token from the config entry must be forwarded to
+    the API client at construction and the entry/hass bound to the runtime
+    for the 401 reauth trigger."""
+    write_cache(tmp_path)
+    data = entry_data()
+    data["user_token"] = "persisted-token"
+    entry = FakeEntry("entry-1", data)
+    hass = FakeHass(tmp_path, session=object(), entries=[entry])
+
+    captured: dict[str, Any] = {}
+
+    async def validate(self: Any, user_id: str) -> JellyfinConnectionInfo:
+        captured["user_token"] = self.user_token
+        return connection_info()
+
+    monkeypatch.setattr(
+        "custom_components.jellyfin_assist.api.JellyfinApiClient.async_validate_connection",
+        validate,
+    )
+
+    assert run(async_setup_entry(hass, entry)) is True
+
+    # The client received the user token.
+    assert captured["user_token"] == "persisted-token"
+    # The entry and hass are bound to the runtime so async_trigger_reauth
+    # can reach ConfigEntry.async_start_reauth.
+    assert entry.runtime_data._config_entry is entry
+    assert entry.runtime_data._hass is hass
+
+
+def test_setup_entry_without_user_token_falls_back_to_api_key(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """Existing installations with no user_token continue to work: the
+    client is constructed with an empty token and _headers prefers the API key."""
+    write_cache(tmp_path)
+    entry = FakeEntry("entry-1", entry_data())
+    hass = FakeHass(tmp_path, session=object(), entries=[entry])
+
+    captured: dict[str, Any] = {}
+
+    async def validate(self: Any, user_id: str) -> JellyfinConnectionInfo:
+        captured["user_token"] = self.user_token
+        return connection_info()
+
+    monkeypatch.setattr(
+        "custom_components.jellyfin_assist.api.JellyfinApiClient.async_validate_connection",
+        validate,
+    )
+
+    assert run(async_setup_entry(hass, entry)) is True
+
+    # No token -> empty token (API-key fallback path).
+    assert captured["user_token"] == ""
+    # _headers resolves to the api_key when the token is empty.
+    assert entry.runtime_data.client._headers["X-Emby-Token"] == "secret"

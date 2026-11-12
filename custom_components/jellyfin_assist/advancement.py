@@ -235,6 +235,12 @@ async def _async_write_sync_position(
             position_ticks=ticks,
             is_paused=is_paused,
             device_id=player,
+            # On a 401 (expired user token) api.py calls this once to mint a
+            # fresh token via the HA re-authentication flow and retries; see
+            # runtime.async_trigger_reauth. The callback is only referenced
+            # when a token is configured; with an API-key-only install it
+            # also triggers a reauth (the flow re-mints the token).
+            _async_auth_refresh=runtime.async_trigger_reauth,
         )
     except (OSError, JellyfinApiError, asyncio.TimeoutError) as exc:
         _LOGGER.debug(

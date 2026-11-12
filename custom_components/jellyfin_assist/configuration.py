@@ -23,6 +23,7 @@ from .const import (
     CONF_QUEUE_SERVICE_URL,
     CONF_SERVER_URL,
     CONF_USER_ID,
+    CONF_USER_TOKEN,
     CONF_VERIFY_SSL,
     DEFAULT_VERIFY_SSL,
 )
@@ -35,6 +36,7 @@ CONNECTION_DATA_KEYS: Final = frozenset(
         CONF_SERVER_URL,
         CONF_API_KEY,
         CONF_USER_ID,
+        CONF_USER_TOKEN,
         CONF_VERIFY_SSL,
     }
 )
@@ -91,12 +93,18 @@ def normalize_playback_targets(value: Any) -> tuple[str, ...]:
 
 @dataclass(frozen=True, slots=True)
 class JellyfinConnectionSettings:
-    """Validated connection settings persisted in config-entry data."""
+    """Validated connection settings persisted in config-entry data.
+
+    A persistent user access token (``user_token``) is optional: when absent,
+    requests fall back to the bare server API key, preserving existing
+    installations that were configured before user-token auth existed.
+    """
 
     server_url: str
     api_key: str
     user_id: str
     verify_ssl: bool = DEFAULT_VERIFY_SSL
+    user_token: str = ""
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "JellyfinConnectionSettings":
@@ -106,6 +114,8 @@ class JellyfinConnectionSettings:
         if not isinstance(verify_ssl, bool):
             raise ValueError(f"{CONF_VERIFY_SSL} must be a boolean")
 
+        user_token = str(data.get(CONF_USER_TOKEN) or "").strip()
+
         return cls(
             server_url=normalize_server_url(
                 _clean_required_text(data.get(CONF_SERVER_URL), field=CONF_SERVER_URL)
@@ -113,17 +123,25 @@ class JellyfinConnectionSettings:
             api_key=_clean_required_text(data.get(CONF_API_KEY), field=CONF_API_KEY),
             user_id=_clean_required_text(data.get(CONF_USER_ID), field=CONF_USER_ID),
             verify_ssl=verify_ssl,
+            user_token=user_token,
         )
 
     def as_dict(self) -> dict[str, Any]:
-        """Serialize the canonical config-entry data shape."""
+        """Serialize the canonical config-entry data shape.
 
-        return {
+        The user token is only persisted when present; a blank token is
+        omitted so the API-key fallback path is represented by its absence.
+        """
+
+        result: dict[str, Any] = {
             CONF_SERVER_URL: self.server_url,
             CONF_API_KEY: self.api_key,
             CONF_USER_ID: self.user_id,
             CONF_VERIFY_SSL: self.verify_ssl,
         }
+        if self.user_token:
+            result[CONF_USER_TOKEN] = self.user_token
+        return result
 
 
 @dataclass(frozen=True, slots=True)

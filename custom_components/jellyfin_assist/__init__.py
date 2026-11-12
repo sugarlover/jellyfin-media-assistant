@@ -82,6 +82,10 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
         api_key=connection.api_key,
         verify_ssl=connection.verify_ssl,
         user_id=connection.user_id,
+        # A persistent user access token takes precedence over the API key
+        # (see api.py _headers, added in c90cec8). Empty/absent falls back to
+        # the bare server API key, preserving existing installations.
+        user_token=connection.user_token,
     )
     catalog_client = JellyfinCatalogClient(api=client, user_id=connection.user_id)
     queue_storage_key = f"{DOMAIN}.queue.{entry.entry_id}"
@@ -158,6 +162,7 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
         queue_client=queue_client,
         queue_storage_key=queue_storage_key,
     )
+    entry.runtime_data.async_bind_entry(entry, hass)
 
     from .advancement import async_setup_queue_advancement
     from .voice_sentences import async_provision_voice_sentences

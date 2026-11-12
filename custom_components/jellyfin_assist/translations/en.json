@@ -9,12 +9,14 @@
           "server_url": "Jellyfin server URL",
           "api_key": "API key",
           "user_id": "Jellyfin user ID",
+          "user_password": "Jellyfin user password",
           "verify_ssl": "Verify SSL certificate"
         },
         "data_description": {
           "server_url": "Complete local URL, including http:// or https:// and any port.",
           "api_key": "Stored in the Home Assistant config entry and never included in diagnostics or search responses.",
           "user_id": "The Jellyfin user whose library permissions define the searchable catalog.",
+          "user_password": "Used once to mint a persistent user access token. It is never stored — only the resulting token is, and it is kept out of diagnostics and logs.",
           "verify_ssl": "Disable only for a trusted local server using a self-signed certificate."
         }
       }

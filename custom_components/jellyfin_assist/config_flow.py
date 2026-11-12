@@ -38,6 +38,8 @@ from .const import (
     CONF_PLAYBACK_TARGETS,
     CONF_SERVER_URL,
     CONF_USER_ID,
+    CONF_USER_PASSWORD,
+    CONF_USER_TOKEN,
     CONF_VERIFY_SSL,
     DEFAULT_VERIFY_SSL,
     DOMAIN,
@@ -60,6 +62,12 @@ STEP_USER_SCHEMA = vol.Schema(
         vol.Required(CONF_USER_ID): TextSelector(
             TextSelectorConfig(type=TextSelectorType.TEXT)
         ),
+        vol.Optional(CONF_USER_PASSWORD): TextSelector(
+            TextSelectorConfig(
+                type=TextSelectorType.PASSWORD,
+                autocomplete="current-password",
+            )
+        ),
         vol.Required(CONF_VERIFY_SSL, default=DEFAULT_VERIFY_SSL): BooleanSelector(),
     }
 )
@@ -81,7 +89,15 @@ async def async_validate_input(
     hass: HomeAssistant,
     data: dict[str, Any],
 ) -> tuple[dict[str, Any], JellyfinConnectionInfo]:
-    """Normalize input and validate the Jellyfin server, token, and user."""
+    """Normalize input, validate the server, and mint a user access token.
+
+    When a user password is supplied, a user-bound access token is minted via
+    the existing ``async_get_user_access_token`` and stored as
+    ``CONF_USER_TOKEN``. The password itself is never returned in the
+    normalized data — only the resulting token is. When no password is
+    supplied (existing installations or a blank field), the token is omitted
+    and the client falls back to the bare server API key.
+    """
 
     settings = JellyfinConnectionSettings.from_mapping(data)
     normalized = settings.as_dict()
@@ -91,9 +107,17 @@ async def async_validate_input(
         server_url=settings.server_url,
         api_key=settings.api_key,
         verify_ssl=settings.verify_ssl,
+        user_id=settings.user_id,
+        user_token=settings.user_token,
     )
     info = await client.async_validate_connection(settings.user_id)
     normalized[CONF_USER_ID] = info.user_id
+
+    password = str(data.get(CONF_USER_PASSWORD) or "").strip()
+    if password:
+        token = await client.async_get_user_access_token(info.user_id, password)
+        normalized[CONF_USER_TOKEN] = token
+
     return normalized, info
 
 
@@ -155,6 +179,84 @@ class JellyfinAssistConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    async def async_step_reauth(
+        self,
+        entry_data: dict[str, Any] | None = None,
+    ) -> config_entries.ConfigFlowResult:
+        """Re-authenticate: prompt for the password to mint a fresh token.
+
+        Triggered when a stored user access token is rejected (401) during a
+        playback-position write. Prompts for the Jellyfin user password,
+        mints a new user access token, and updates the config entry with only
+        the token. The password is never persisted.
+        """
+
+        errors: dict[str, str] = {}
+        if entry_data is not None:
+            password = str(entry_data.get(CONF_USER_PASSWORD) or "")
+            try:
+                token = await async_get_user_access_token_for_reauth(
+                    self.hass, dict(self.config_entry.data), password
+                )
+            except JellyfinAuthenticationError:
+                errors["base"] = "invalid_auth"
+            except (JellyfinConnectionError, JellyfinInvalidResponseError):
+                errors["base"] = "cannot_connect"
+            except ValueError:
+                errors["base"] = "invalid_configuration"
+            else:
+                data = dict(self.config_entry.data)
+                data[CONF_USER_TOKEN] = token
+                self.config_entry.async_update_entry(data=data)
+                return self.async_abort(reason="reauth_successful")
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_USER_PASSWORD): TextSelector(
+                        TextSelectorConfig(
+                            type=TextSelectorType.PASSWORD,
+                            autocomplete="current-password",
+                        )
+                    ),
+                }
+            ),
+            errors=errors,
+        )
+
+
+async def async_get_user_access_token_for_reauth(
+    hass: HomeAssistant, data: dict[str, Any], password: str
+) -> str:
+    """Mint a fresh user access token from the supplied password.
+
+    The reachability/user validation is run with ``user_token=""`` so the
+    client falls back to the server API key (always valid for reads). The
+    stored token was the one just rejected with a 401, so validating with it
+    would fail again before the mint could run. The mint itself authenticates
+    with the server API key and the password, returning the replacement token.
+    """
+
+    from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+    settings = JellyfinConnectionSettings.from_mapping(data)
+    if not password.strip():
+        raise ValueError(f"{CONF_USER_PASSWORD} must not be empty")
+    client = JellyfinApiClient(
+        session=async_get_clientsession(hass),
+        server_url=settings.server_url,
+        api_key=settings.api_key,
+        verify_ssl=settings.verify_ssl,
+        user_id=settings.user_id,
+        # Empty token -> the validator uses the server API-key fallback and
+        # does NOT present the stale, just-rejected user token. The mint below
+        # authenticates via the API key + password and mints the fresh token.
+        user_token="",
+    )
+    info = await client.async_validate_connection(settings.user_id)
+    return await client.async_get_user_access_token(info.user_id, password)
+
 
 class JellyfinAssistOptionsFlow(config_entries.OptionsFlowWithReload):
     """Manage optional media-assistant behavior."""
@@ -192,5 +294,6 @@ __all__ = [
     "JellyfinAssistOptionsFlow",
     "OPTIONS_SCHEMA",
     "STEP_USER_SCHEMA",
+    "async_get_user_access_token_for_reauth",
     "async_validate_input",
 ]

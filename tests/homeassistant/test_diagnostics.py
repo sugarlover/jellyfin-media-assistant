@@ -105,3 +105,34 @@ def test_api_key_is_redacted(tmp_path: Path) -> None:
         "last_provisioning_error": None,
     }
     assert "top-secret" not in str(diagnostics)
+
+
+def test_user_token_is_redacted(tmp_path: Path) -> None:
+    async def loader() -> Any:
+        raise AssertionError("not used")
+
+    entry = FakeEntry(
+        "entry",
+        {
+            "server_url": "http://host",
+            "api_key": "top-secret",
+            "user_id": "user",
+            "user_token": "sensitive-token",
+        },
+    )
+    entry.runtime_data = JellyfinAssistRuntime(
+        client=object(),  # type: ignore[arg-type]
+        catalog_manager=CatalogManager(
+            snapshot_loader=loader,
+            requested_types=["Movie"],
+            cache_identity="server:user",
+            cache_store=None,
+        ),
+        connection_info=None,
+    )
+
+    diagnostics = run(async_get_config_entry_diagnostics(FakeHass(tmp_path), entry))
+
+    assert diagnostics["entry"]["api_key"] == "**REDACTED**"
+    assert diagnostics["entry"]["user_token"] == "**REDACTED**"
+    assert "sensitive-token" not in str(diagnostics)

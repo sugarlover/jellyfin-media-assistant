@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import intent
 
 from .configuration import CONFIG_ENTRY_MINOR_VERSION, CONFIG_ENTRY_VERSION
-from .const import CONF_API_KEY
+from .const import CONF_API_KEY, CONF_USER_TOKEN
 from .voice import (
     CUSTOM_SENTENCE_FILENAME,
     CUSTOM_SENTENCE_LANGUAGE,
@@ -45,7 +45,7 @@ async def async_get_config_entry_diagnostics(
             "current_version": CONFIG_ENTRY_VERSION,
             "current_minor_version": CONFIG_ENTRY_MINOR_VERSION,
         },
-        "entry": async_redact_data(dict(entry.data), {CONF_API_KEY}),
+        "entry": async_redact_data(dict(entry.data), {CONF_API_KEY, CONF_USER_TOKEN}),
         "connection": (
             {
                 "server_id": connection_info.server_id,

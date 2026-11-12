@@ -11,7 +11,11 @@ VERSION: Final = "0.1.0-beta.2"
 CONF_SERVER_URL: Final = "server_url"
 CONF_API_KEY: Final = "api_key"
 CONF_USER_ID: Final = "user_id"
+CONF_USER_TOKEN: Final = "user_token"
 CONF_VERIFY_SSL: Final = "verify_ssl"
+# Transient config-flow field used only to mint a user access token. It is
+# never persisted in the config entry; the resulting token is.
+CONF_USER_PASSWORD: Final = "user_password"
 CONF_DEFAULT_MEDIA_PLAYER: Final = "default_media_player"
 CONF_PLAYBACK_TARGETS: Final = "playback_targets"
 # Retired in schema 1.3; retained only so old config entries can be migrated.

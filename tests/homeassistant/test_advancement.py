@@ -751,6 +751,7 @@ class RecordingPlayingClient:
 
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.auth_refresh: Any = None
 
     async def async_post_playing_items(
         self,
@@ -759,7 +760,9 @@ class RecordingPlayingClient:
         position_ticks: int,
         is_paused: bool,
         device_id: str = "jellyfin-assist",
+        _async_auth_refresh: Any = None,
     ) -> None:
+        self.auth_refresh = _async_auth_refresh
         self.calls.append(
             {
                 "item_id": item_id,
@@ -1013,3 +1016,70 @@ def test_setup_tracks_periodic_write_sync_with_keyword_args(
     assert interval == timedelta(seconds=PLAYBACK_WRITESYNC_INTERVAL_SECONDS)
     assert not isinstance(action, timedelta)
     assert callable(action)
+
+
+def test_write_sync_passes_auth_refresh_to_client(tmp_path: Path) -> None:
+    """The position write must hand the runtime's reauth trigger to the
+    client so api.py can mint a fresh token on a 401 and retry."""
+    from custom_components.jellyfin_assist.advancement import (
+        _async_write_sync_position,
+    )
+
+    client = RecordingPlayingClient()
+    rt = runtime_with_client(client)
+    rt.playback_sessions["media_player.example"] = _session(
+        duration_seconds=180.0,
+        accumulated_playing_seconds=60.0,
+    )
+    hass = FakeHass(tmp_path)
+
+    run(
+        _async_write_sync_position(
+            hass,
+            rt,
+            player="media_player.example",
+            is_paused=True,
+        )
+    )
+
+    # The callback wired into the write is the runtime's reauth trigger.
+    assert client.auth_refresh is not None
+
+    run(client.auth_refresh())
+    # It is a coroutine bound to the runtime.
+    assert client.calls[0]["item_id"] == "abc123"
+
+
+def test_runtime_trigger_reauth_starts_config_entry_reauth(
+    tmp_path: Path,
+) -> None:
+    """runtime.async_trigger_reauth must call ConfigEntry.async_start_reauth
+    (the HA reauth flow) when the entry+hass are bound; a failure must be
+    swallowed, never raising into the sync loop."""
+    from custom_components.jellyfin_assist.advancement import (
+        _async_write_sync_position,
+    )
+
+    client = RecordingPlayingClient()
+    rt = runtime_with_client(client)
+    entry = FakeEntry("entry", {"server_url": "http://host", "api_key": "k"})
+    rt.async_bind_entry(entry, object())
+    rt.playback_sessions["media_player.example"] = _session(
+        duration_seconds=180.0,
+        accumulated_playing_seconds=60.0,
+    )
+    hass = FakeHass(tmp_path)
+
+    run(
+        _async_write_sync_position(
+            hass,
+            rt,
+            player="media_player.example",
+            is_paused=True,
+        )
+    )
+
+    # Fire the refresh callback exactly like api.py does on a 401.
+    run(client.auth_refresh())
+
+    assert entry.reauth_triggered is True
