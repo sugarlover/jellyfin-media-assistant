@@ -115,7 +115,9 @@ async def async_validate_input(
 
     password = str(data.get(CONF_USER_PASSWORD) or "").strip()
     if password:
-        token = await client.async_get_user_access_token(info.user_id, password)
+        token = await client.async_get_user_access_token(
+            info.user_id, password, user_name=info.user_name
+        )
         normalized[CONF_USER_TOKEN] = token
 
     return normalized, info
@@ -157,8 +159,14 @@ class JellyfinAssistConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             try:
                 normalized, info = await async_validate_input(self.hass, user_input)
             except JellyfinAuthenticationError:
+                _LOGGER.debug(
+                    "Jellyfin Media Assistant install rejected: credentials rejected"
+                )
                 errors["base"] = "invalid_auth"
             except JellyfinConnectionError:
+                _LOGGER.debug(
+                    "Jellyfin Media Assistant install rejected: server unreachable"
+                )
                 errors["base"] = "cannot_connect"
             except (JellyfinInvalidResponseError, ValueError, TypeError):
                 errors["base"] = "invalid_configuration"
@@ -255,7 +263,9 @@ async def async_get_user_access_token_for_reauth(
         user_token="",
     )
     info = await client.async_validate_connection(settings.user_id)
-    return await client.async_get_user_access_token(info.user_id, password)
+    return await client.async_get_user_access_token(
+        info.user_id, password, user_name=info.user_name
+    )
 
 
 class JellyfinAssistOptionsFlow(config_entries.OptionsFlowWithReload):

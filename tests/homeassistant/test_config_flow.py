@@ -211,8 +211,11 @@ def test_user_step_mints_user_token_and_does_not_store_password(
             user_name="Example User",
         )
 
-    async def mint_token(self: Any, user_id: str, password: str) -> str:
+    async def mint_token(self: Any, user_id: str, password: str, *,
+        user_name: str | None = None,
+    ) -> str:
         assert password == "mypassword"
+        assert user_name == "Example User"
         return "user-token-1"
 
     monkeypatch.setattr(
@@ -300,8 +303,11 @@ def test_reauth_step_mints_token_and_updates_entry_does_not_store_password(
             user_name="Example User",
         )
 
-    async def mint_token(self: Any, user_id: str, password: str) -> str:
+    async def mint_token(self: Any, user_id: str, password: str, *,
+        user_name: str | None = None,
+    ) -> str:
         assert password == "newpassword"
+        assert user_name == "Example User"
         return "fresh-token"
 
     monkeypatch.setattr(
@@ -359,8 +365,11 @@ def test_reauth_helper_validates_with_api_key_fallback_not_stale_token(
             user_name="Example User",
         )
 
-    async def mint_token(self: Any, user_id: str, password: str) -> str:
+    async def mint_token(self: Any, user_id: str, password: str, *,
+        user_name: str | None = None,
+    ) -> str:
         assert password == "password"
+        assert user_name == "Example User"
         return "fresh-token"
 
     monkeypatch.setattr(
@@ -402,7 +411,9 @@ def test_reauth_step_maps_authentication_failure_to_form_error(
             user_name="Example User",
         )
 
-    async def mint_token(self: Any, user_id: str, password: str) -> str:
+    async def mint_token(self: Any, user_id: str, password: str, *,
+        user_name: str | None = None,
+    ) -> str:
         raise JellyfinAuthenticationError("bad password")
 
     monkeypatch.setattr(

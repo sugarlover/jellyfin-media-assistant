@@ -447,29 +447,109 @@ def test_post_playing_items_401_only_retried_once_not_loop() -> None:
     assert len(session.calls) == 2
 
 
-def test_get_user_access_token_reads_access_token_header() -> None:
+class FakeJellyfinAuthServer:
+    """Emulate the Jellyfin 10.11.11 authentication behavior.
+
+    - ``POST /Users/{id}/Authenticate`` (legacy route): answered with a JSON
+      body and NO ``Access-Token`` response header — the legacy route is not
+      the body-based authentication protocol, so it never returns the token
+      in a header.
+    - ``POST /Users/AuthenticateByName``: answered, on valid credentials, with
+      ``{"AccessToken": ..., "User": {"Id": ...}}`` in the JSON body.
+    """
+
+    def __init__(self, user_id: str, token: str = "fresh-token") -> None:
+        self.user_id = user_id
+        self.token = token
+        self.calls: list[dict[str, Any]] = []
+
+    def post(self, url: str, **kwargs: Any) -> FakeResponse:
+        self.calls.append({"method": "POST", "url": url, **kwargs})
+        if url == "http://host/Users/AuthenticateByName":
+            return FakeResponse(
+                200,
+                {"AccessToken": self.token, "User": {"Id": self.user_id}},
+            )
+        # Legacy route: body is not the supported protocol, no token header.
+        return FakeResponse(200, {})
+
+
+def test_reproduction_fresh_install_with_password_uses_body_auth_protocol() -> None:
+    """Locked reproduction of the fresh-install failure.
+
+    A fresh install with a user password must mint the token via the
+    body-based ``POST /Users/AuthenticateByName`` contract. Against the
+    legacy header-reading implementation this emulated 10.11.11 server
+    yields no token (JellyfinInvalidResponseError -> "invalid
+    configuration"), which is the reported failure.
+    """
+
+    server = FakeJellyfinAuthServer("user-1")
+    client = JellyfinApiClient(server, "http://host", "secret")
+
+    token = run(
+        client.async_get_user_access_token("user-1", "p4ss", user_name="Example User")
+    )
+
+    assert token == "fresh-token"
+    assert len(server.calls) == 1
+    call = server.calls[0]
+    assert call["method"] == "POST"
+    assert call["url"] == "http://host/Users/AuthenticateByName"
+    assert call["json"] == {"UserName": "Example User", "Pw": "p4ss"}
+
+
+def test_get_user_access_token_mints_via_authenticate_by_name() -> None:
     session = FakeSession(
         [
-            FakeResponse(200, None, headers={"Access-Token": "fresh-token"})
+            FakeResponse(
+                200,
+                {"AccessToken": "fresh-token", "User": {"Id": "user-1"}},
+            )
         ]
     )
     client = JellyfinApiClient(session, "http://host", "secret")
 
-    token = run(client.async_get_user_access_token("user-1", "p4ss"))
+    token = run(
+        client.async_get_user_access_token("USER-1", " p4ss ", user_name=" Example User ")
+    )
 
     assert token == "fresh-token"
     call = session.calls[0]
     assert call["method"] == "POST"
-    assert call["url"] == "http://host/Users/user-1/Authenticate"
-    assert call["json"] == {"Pw": "p4ss"}
+    assert call["url"] == "http://host/Users/AuthenticateByName"
+    assert call["json"] == {"UserName": "Example User", "Pw": " p4ss "}
 
 
-def test_get_user_access_token_rejects_missing_token() -> None:
-    session = FakeSession([FakeResponse(200, None, headers={})])
+def test_get_user_access_token_rejects_missing_access_token() -> None:
+    session = FakeSession([FakeResponse(200, {})])
     client = JellyfinApiClient(session, "http://host", "secret")
 
     with pytest.raises(JellyfinInvalidResponseError, match="access token"):
-        run(client.async_get_user_access_token("user-1", "p4ss"))
+        run(client.async_get_user_access_token("user-1", "p4ss", user_name="Example User"))
+
+
+def test_get_user_access_token_rejects_mismatched_user_id() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(
+                200,
+                {"AccessToken": "fresh-token", "User": {"Id": "user-2"}},
+            )
+        ]
+    )
+    client = JellyfinApiClient(session, "http://host", "secret")
+
+    with pytest.raises(JellyfinInvalidResponseError, match="different user"):
+        run(client.async_get_user_access_token("user-1", "p4ss", user_name="Example User"))
+
+
+def test_get_user_access_token_rejects_non_object_response() -> None:
+    session = FakeSession([FakeResponse(200, "not-an-object")])
+    client = JellyfinApiClient(session, "http://host", "secret")
+
+    with pytest.raises(JellyfinInvalidResponseError, match="not an object"):
+        run(client.async_get_user_access_token("user-1", "p4ss", user_name="Example User"))
 
 
 def test_get_user_access_token_rejects_bad_password() -> None:
@@ -477,7 +557,26 @@ def test_get_user_access_token_rejects_bad_password() -> None:
     client = JellyfinApiClient(session, "http://host", "secret")
 
     with pytest.raises(JellyfinAuthenticationError, match="password"):
-        run(client.async_get_user_access_token("user-1", "nope"))
+        run(client.async_get_user_access_token("user-1", "nope", user_name="Example User"))
+
+
+def test_get_user_access_token_rejects_forbidden() -> None:
+    session = FakeSession([FakeResponse(403, None)])
+    client = JellyfinApiClient(session, "http://host", "secret")
+
+    with pytest.raises(JellyfinAuthenticationError, match="password"):
+        run(client.async_get_user_access_token("user-1", "p4ss", user_name="Example User"))
+
+
+def test_get_user_access_token_requires_user_name_without_posting() -> None:
+    session = FakeSession([])
+    client = JellyfinApiClient(session, "http://host", "secret")
+
+    with pytest.raises(JellyfinInvalidResponseError, match="user name"):
+        run(client.async_get_user_access_token("user-1", "p4ss"))
+
+    # A missing user name must not POST ``UserName=None`` to the server.
+    assert session.calls == []
 
 
 def test_post_blocks_route_without_user_prefix() -> None:

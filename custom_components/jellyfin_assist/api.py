@@ -108,7 +108,7 @@ class JellyfinApiClient:
     def _headers(self) -> dict[str, str]:
         """Return Jellyfin headers without exposing the token in diagnostics.
 
-        A user-bound access token (minted via ``POST /Users/{uid}/Authenticate``)
+        A user-bound access token (minted via ``POST /Users/AuthenticateByName``)
         is sent in preference to the bare server API key so the session resolves
         to a real user. Without a token the API key is used (read-only reads
         still work; position persistence would not).
@@ -420,13 +420,18 @@ class JellyfinApiClient:
         self,
         user_id: str,
         pwp: str,
+        *,
+        user_name: str | None = None,
     ) -> str:
         """Mint a user-bound device/access token for this user.
 
-        POST /Users/{user_id}/Authenticate with ``{"Pw": <password>}``. Jellyfin
-        answers with the per-user access token in the ``Access-Token`` response
-        header. Unlike the bare server API key, this token binds a real user, so
-        the playback-progress session resolves to a user and ``SaveUserData``
+        POST /Users/AuthenticateByName with ``{"UserName": <user name>, "Pw":
+        <password>}``. Jellyfin answers with the per-user access token and the
+        resolved user in the response **JSON body**
+        (``{"AccessToken": ..., "User": {"Id": ...}}``). The returned user id
+        is verified (case-insensitive) against the configured user id.
+        Unlike the bare server API key, this token binds a real user, so the
+        playback-progress session resolves to a user and ``SaveUserData``
         runs server-side.
         """
 
@@ -435,15 +440,20 @@ class JellyfinApiClient:
             raise ValueError("Jellyfin user ID is required")
         if not pwp.strip():
             raise ValueError("Jellyfin user password is required")
+        normalized_user_name = (
+            str(user_name).strip() if user_name is not None else ""
+        )
+        if not normalized_user_name:
+            raise JellyfinInvalidResponseError(
+                "Jellyfin user name is required to authenticate; "
+                "re-run the connection validation"
+            )
 
         # Authenticate is a distinct POST that is NOT the playing-items route, so
         # it cannot go through ``_request`` (whose guard allows only that route).
         # It is authenticated with the server API key; the returned token is what
         # later requests send.
-        url = (
-            f"{self.server_url}"
-            f"/Users/{quote(normalized_user_id, safe='')}/Authenticate"
-        )
+        url = f"{self.server_url}/Users/AuthenticateByName"
         headers = {
             "Accept": "application/json",
             "Authorization": (
@@ -457,7 +467,7 @@ class JellyfinApiClient:
         try:
             async with self.session.post(
                 url,
-                json={"Pw": pwp},
+                json={"UserName": normalized_user_name, "Pw": pwp},
                 headers=headers,
                 ssl=self.verify_ssl,
                 timeout=ClientTimeout(total=self.timeout_seconds),
@@ -475,10 +485,36 @@ class JellyfinApiClient:
                     raise JellyfinInvalidResponseError(
                         f"Jellyfin returned HTTP {response.status}: {body}"
                     )
-                access_token = response.headers.get("Access-Token", "")
+                try:
+                    payload = await response.json(content_type=None)
+                except (
+                    ClientResponseError,
+                    json.JSONDecodeError,
+                    ValueError,
+                ) as err:
+                    raise JellyfinInvalidResponseError(
+                        "Jellyfin returned invalid JSON"
+                    ) from err
+                if not isinstance(payload, Mapping):
+                    raise JellyfinInvalidResponseError(
+                        "Jellyfin authentication response was not an object"
+                    )
+                access_token = str(
+                    payload.get("AccessToken") or ""
+                ).strip()
                 if not access_token:
                     raise JellyfinInvalidResponseError(
                         "Jellyfin did not return an access token"
+                    )
+                returned_user_id = str(
+                    (payload.get("User") or {}).get("Id") or ""
+                ).strip()
+                if (
+                    not returned_user_id
+                    or returned_user_id.casefold() != normalized_user_id.casefold()
+                ):
+                    raise JellyfinInvalidResponseError(
+                        "Jellyfin returned a different user than requested"
                     )
                 return access_token
         except JellyfinApiError:
