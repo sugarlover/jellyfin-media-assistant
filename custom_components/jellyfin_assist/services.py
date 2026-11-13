@@ -15,6 +15,7 @@ from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 
+from .configuration import require_playback_target
 from .action import (
     CatalogUnavailableError,
     SearchActionValidationError,
@@ -408,21 +409,10 @@ def _candidate_entity_ids(
 ) -> tuple[str, ...]:
     """Return allowed active player IDs, preserving configured target order."""
 
-    if runtime.playback_targets:
-        return tuple(
-            entity_id
-            for entity_id in runtime.playback_targets
-            if _media_player_is_available(hass, entity_id)
-        )
-
-    states = getattr(hass, "states", None)
-    if states is None or not hasattr(states, "async_all"):
-        seeds = [runtime.default_media_player] if runtime.default_media_player else []
-        return tuple(entity_id for entity_id in seeds if entity_id)
     return tuple(
-        state.entity_id
-        for state in states.async_all("media_player")
-        if getattr(state, "entity_id", "").startswith("media_player.")
+        entity_id
+        for entity_id in runtime.playback_targets
+        if _media_player_is_available(hass, entity_id)
     )
 
 
@@ -595,7 +585,7 @@ async def async_handle_resolve_media_player(
 
     default_player = _clean_text(runtime.default_media_player)
     default_is_allowed = (
-        not runtime.playback_targets or default_player in runtime.playback_targets
+        default_player in runtime.playback_targets
     )
     if (
         default_player
@@ -755,6 +745,10 @@ async def async_handle_play_on_chromecast(
             "invalid_playback_target",
             "Choose a Home Assistant media_player entity.",
         )
+    try:
+        require_playback_target(runtime.playback_targets, target_entity_id)
+    except ValueError as err:
+        raise _validation_error("invalid_playback_target", str(err)) from err
     if not _media_player_is_available(hass, target_entity_id):
         raise _validation_error(
             "playback_target_not_found",
@@ -905,6 +899,14 @@ async def _async_queue_call(
 ) -> ServiceResponse:
     """Call the native queue store while preserving the established response envelope."""
 
+    try:
+        require_playback_target(runtime.playback_targets, str(kwargs.get("player") or ""))
+    except ValueError as err:
+        return {
+            "status": 403,
+            "content": {"success": False, "status": "invalid_playback_target", "message": str(err)},
+            "headers": {},
+        }
     client = runtime.queue_client
     if client is None:
         return {

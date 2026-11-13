@@ -40,7 +40,11 @@ def run(coro: Any) -> Any:
 def build_runtime(
     *,
     default_media_player: str | None = None,
-    playback_targets: tuple[str, ...] = (),
+    playback_targets: tuple[str, ...] = (
+        "media_player.example",
+        "media_player.example_chromecast",
+        "media_player.example_secondary_chromecast",
+    ),
     client: Any = None,
     queue_client: Any = None,
     user_id: str = "USER-1",

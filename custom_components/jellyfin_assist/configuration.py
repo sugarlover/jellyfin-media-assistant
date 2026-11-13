@@ -91,6 +91,16 @@ def normalize_playback_targets(value: Any) -> tuple[str, ...]:
     )
 
 
+def require_playback_target(targets: tuple[str, ...], player: str) -> None:
+    """Reject every player outside the explicitly configured allow-list."""
+
+    if not player.startswith("media_player.") or player not in targets:
+        raise ValueError(
+            f"Media player {player!r} is not configured for Jellyfin Assist. "
+            "Select it in the integration options."
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class JellyfinConnectionSettings:
     """Validated connection settings persisted in config-entry data.

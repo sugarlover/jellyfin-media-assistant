@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Mapping
 from typing import Any
 
+from .configuration import require_playback_target
 from .item_lookup import async_get_native_item
 from .playback import async_play_on_chromecast
 from .queue_store import QueueStoreError
@@ -28,6 +29,14 @@ def _body(response: Mapping[str, Any]) -> dict[str, Any]:
 
 
 async def _queue_call(runtime: JellyfinAssistRuntime, operation: str, **kwargs: Any) -> dict[str, Any]:
+    try:
+        require_playback_target(runtime.playback_targets, str(kwargs.get("player") or ""))
+    except ValueError as err:
+        return {
+            "status": 403,
+            "content": {"success": False, "status": "invalid_playback_target", "message": str(err)},
+            "headers": {},
+        }
     client = runtime.queue_client
     if client is None:
         return {
@@ -62,6 +71,16 @@ async def async_play_item(
     start_position_ticks: int | None = None,
 ) -> dict[str, Any]:
     """Turn on a target and play one resolved Jellyfin item."""
+
+    try:
+        require_playback_target(runtime.playback_targets, media_player)
+    except ValueError as err:
+        return {
+            "success": False,
+            "status": "invalid_playback_target",
+            "message": str(err),
+            "media_player": media_player,
+        }
 
     item_id = _text(item.get("id"))
     title = _text(item.get("name"))
@@ -154,6 +173,16 @@ async def async_prepare_play_session(
 ) -> dict[str, Any]:
     """Reset repeat state before a new play request replaces a queue."""
 
+    try:
+        require_playback_target(runtime.playback_targets, media_player)
+    except ValueError as err:
+        return {
+            "success": False,
+            "status": "invalid_playback_target",
+            "message": str(err),
+            "media_player": media_player,
+        }
+
     player_name = _player_name(hass, media_player)
     response = await _queue_call(
         runtime,
@@ -223,6 +252,16 @@ async def async_queue_add_item(
     media_player: str,
 ) -> dict[str, Any]:
     """Add one resolved item while preserving the historical script contract."""
+
+    try:
+        require_playback_target(runtime.playback_targets, media_player)
+    except ValueError as err:
+        return {
+            "success": False,
+            "status": "invalid_playback_target",
+            "message": str(err),
+            "media_player": media_player,
+        }
 
     normalized = dict(item)
     item_id = _text(normalized.get("id"))

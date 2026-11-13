@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 import asyncio
 import logging
+import math
 import re
 from typing import Any, Final
 
@@ -25,6 +26,7 @@ _LOGGER = logging.getLogger(__name__)
 
 COMPLETION_THRESHOLD_PERCENT: Final = 95.0
 PLAYBACK_WRITESYNC_INTERVAL_SECONDS: Final = 60.0
+_SESSION_UNSET: Final = object()
 _CONTENT_ID_PATTERN: Final = re.compile(r"/(?:Videos|Audio)/([A-Za-z0-9]+)(?:/|$)")
 
 
@@ -123,6 +125,8 @@ def _update_playback_session(
 
     old_player_state = getattr(old_state, "state", None)
     new_player_state = getattr(new_state, "state", None)
+    if old_player_state == new_player_state:
+        return
     transition_at = _timestamp(getattr(new_state, "last_changed", None))
 
     if old_player_state == "playing":
@@ -204,64 +208,98 @@ async def _async_write_sync_position(
     *,
     session: dict[str, Any] | None = None,
 ) -> None:
-    """Push the tracked position of ``player`` to the user's PlayingItems feed.
+    """Persist a live or snapshotted session; failures never interrupt playback."""
 
-    Called on pause and periodically while playing. Writes are best-effort:
-    any transport failure is logged and swallowed so playback never breaks.
+    if player not in runtime.playback_targets:
+        _LOGGER.debug("Progress skipped: player=%s reason=unlisted_target", player)
+        return
+    lock = runtime.playback_write_locks.setdefault(player, asyncio.Lock())
+    async with lock:
+        await _async_write_session_position(runtime, player, is_paused, session)
 
-    ``session`` lets the caller pass a snapshotted session dict. This is
-    required for the off/unavailable/idle final-write path: by the time the
-    background coroutine runs, the synchronous ``pop`` has already removed
-    the session from ``runtime.playback_sessions``, so the live lookup would
-    return nothing and the write would silently no-op. Passing the snapshot
-    makes the final write persist the position.
-    """
+
+async def _async_write_session_position(
+    runtime: JellyfinAssistRuntime,
+    player: str,
+    is_paused: bool,
+    session: dict[str, Any] | None,
+) -> None:
+    """Serialize writes so an earlier timer cannot overwrite a later final position."""
+
     if session is None:
         session = runtime.playback_sessions.get(player)
-    if not isinstance(session, dict):
+    if not isinstance(session, dict) or not session.get("item_id"):
+        _LOGGER.debug("Progress skipped: player=%s reason=no_session_or_item", player)
         return
-    item_id = session.get("item_id")
-    if not item_id:
+    item_id = session["item_id"]
+    accumulated = session.get("accumulated_playing_seconds")
+    if not isinstance(accumulated, (int, float)) or not math.isfinite(accumulated):
+        _LOGGER.debug(
+            "Progress skipped: player=%s item=%s reason=invalid_position",
+            player, item_id,
+        )
         return
-    duration_seconds = session.get("duration_seconds")
+    if not is_paused:
+        started_at = _timestamp(session.get("playing_started_at"))
+        if started_at > 0:
+            accumulated += max(0.0, datetime.now(timezone.utc).timestamp() - started_at)
+    # Quantize once to whole seconds; Jellyfin uses 10,000,000 ticks per second.
+    ticks = max(0, int(accumulated)) * 10_000_000
+    duration = session.get("duration_seconds")
     if (
-        not isinstance(duration_seconds, (int, float))
-        or duration_seconds <= 0
+        isinstance(duration, (int, float))
+        and math.isfinite(duration)
+        and duration > 0
     ):
-        return
-    accumulated: int | None = None
-    if isinstance(session.get("accumulated_playing_seconds"), (int, float)):
-        accumulated = int(session["accumulated_playing_seconds"])
-    if accumulated is None:
-        return
-    if not is_paused and isinstance(session.get("playing_started_at"), datetime):
-        accumulated += max(0, int((datetime.now(timezone.utc) - session["playing_started_at"]).total_seconds()))
-    ticks = int(accumulated * 10_000_000)
-    # Never write a position past the completion threshold: the item will be
-    # marked complete on the first advancement tick past that point, and
-    # writing a near-complete position would race the completion write.
-    if ticks / (duration_seconds * 10_000_000) * 100 >= COMPLETION_THRESHOLD_PERCENT:
-        return
+        if accumulated / duration * 100 >= COMPLETION_THRESHOLD_PERCENT:
+            _LOGGER.debug(
+                "Progress skipped: player=%s item=%s ticks=%s reason=completion_threshold",
+                player, item_id, ticks,
+            )
+            return
+    else:
+        _LOGGER.debug(
+            "Progress duration unknown: player=%s item=%s; writing tracked position",
+            player, item_id,
+        )
+    _LOGGER.debug(
+        "Progress write: player=%s item=%s user=%s ticks=%s paused=%s",
+        player, item_id, runtime.user_id, ticks, is_paused,
+    )
     try:
         await runtime.client.async_post_playing_items(
             item_id=item_id,
             position_ticks=ticks,
             is_paused=is_paused,
             device_id=player,
-            # On a 401 (expired user token) api.py calls this once to mint a
-            # fresh token via the HA re-authentication flow and retries; see
-            # runtime.async_trigger_reauth. The callback is only referenced
-            # when a token is configured; with an API-key-only install it
-            # also triggers a reauth (the flow re-mints the token).
             _async_auth_refresh=runtime.async_trigger_reauth,
         )
     except (OSError, JellyfinApiError, asyncio.TimeoutError) as exc:
         _LOGGER.debug(
-            "PlayingItems write sync failed for %s (%s): %s",
-            player,
-            item_id,
-            exc,
+            "Progress failed: player=%s item=%s user=%s ticks=%s error=%s",
+            player, item_id, runtime.user_id, ticks, exc,
         )
+    else:
+        _LOGGER.debug(
+            "Progress saved: player=%s item=%s user=%s ticks=%s",
+            player, item_id, runtime.user_id, ticks,
+        )
+
+
+async def _async_finish_incomplete_session(
+    hass: HomeAssistant,
+    runtime: JellyfinAssistRuntime,
+    player: str,
+    session: dict[str, Any] | None,
+) -> None:
+    """Save an incomplete session before discarding it, without popping a new one."""
+
+    if isinstance(session, dict):
+        await _async_write_sync_position(
+            hass, runtime, player, True, session=dict(session)
+        )
+    if runtime.playback_sessions.get(player) is session:
+        runtime.playback_sessions.pop(player, None)
 
 
 async def _async_process_completion(
@@ -271,11 +309,20 @@ async def _async_process_completion(
     player: str,
     old_state: Any,
     new_state: Any,
+    expected_session: Any = _SESSION_UNSET,
 ) -> None:
     """Verify one playing->idle transition and advance its queue when complete."""
 
+    if player not in runtime.playback_targets:
+        _LOGGER.debug("Completion skipped: player=%s reason=unlisted_target", player)
+        return
+    playback_session = runtime.playback_sessions.get(player)
+    if expected_session is not _SESSION_UNSET and playback_session is not expected_session:
+        _LOGGER.debug("Completion skipped: player=%s reason=session_replaced", player)
+        return
     queue_client = runtime.queue_client
     if queue_client is None:
+        await _async_finish_incomplete_session(hass, runtime, player, playback_session)
         return
 
     attrs = getattr(old_state, "attributes", {}) or {}
@@ -310,9 +357,7 @@ async def _async_process_completion(
             "session_item_id": session_item_id,
         }
 
-        if runtime.playback_sessions.get(player) is playback_session:
-            runtime.playback_sessions.pop(player, None)
-            _async_release_playback_session_listener(runtime, player)
+        await _async_finish_incomplete_session(hass, runtime, player, playback_session)
 
         await _async_notify_failure(
             hass,
@@ -326,6 +371,9 @@ async def _async_process_completion(
                 "advancement was attempted."
             ),
         )
+        return
+
+    if runtime.playback_sessions.get(player) is not playback_session:
         return
 
     queue_status = int(queue_response.get("status", 0))
@@ -386,9 +434,7 @@ async def _async_process_completion(
             "queue_current_id": current_id,
         }
 
-        if runtime.playback_sessions.get(player) is playback_session:
-            runtime.playback_sessions.pop(player, None)
-            _async_release_playback_session_listener(runtime, player)
+        await _async_finish_incomplete_session(hass, runtime, player, playback_session)
 
         if queue_status != 200 or not queue_success:
             await _async_notify_failure(
@@ -408,7 +454,6 @@ async def _async_process_completion(
 
     if runtime.playback_sessions.get(player) is playback_session:
         runtime.playback_sessions.pop(player, None)
-        _async_release_playback_session_listener(runtime, player)
 
     try:
         next_response = await queue_client.async_next(player)
@@ -546,29 +591,21 @@ async def _async_periodic_write_sync_tasks(
     hass: HomeAssistant, runtime: JellyfinAssistRuntime
 ) -> None:
     """Write the tracked position for every player currently playing."""
+    _LOGGER.debug(
+        "Periodic progress callback: targets=%s sessions=%s",
+        runtime.playback_targets, tuple(runtime.playback_sessions),
+    )
     for player in runtime.playback_targets:
         state = hass.states.get(player)
         if state is None or state.state != "playing":
+            _LOGGER.debug(
+                "Periodic progress skipped: player=%s reason=not_playing state=%s",
+                player, getattr(state, "state", None),
+            )
             continue
         await _async_write_sync_position(
             hass, runtime, player=player, is_paused=False
         )
-
-
-def _async_release_playback_session_listener(
-    runtime: JellyfinAssistRuntime,
-    player: str,
-) -> None:
-    """Release the dynamic listener registered for an unlisted target.
-
-    Called from every session pop site (off/unavailable, non-completion
-    idle, and completion) plus the unload path: each player has at most
-    one dynamic listener, and popping the entry is idempotent, so no
-    listener can leak past the lifetime of its session.
-    """
-    unsubscribe = runtime.playback_session_listeners.pop(player, None)
-    if unsubscribe is not None:
-        unsubscribe()
 
 
 def _build_queue_advancement_handler(
@@ -576,28 +613,27 @@ def _build_queue_advancement_handler(
     entry: Any,
     runtime: JellyfinAssistRuntime,
 ) -> Any:
-    """Build the state-change handler shared by configured and dynamic listeners.
-
-    The handler drives the playback session for one target: it accumulates
-    playing time, fires final writes on off/unavailable/idle, and routes
-    completions through the queue. Configured targets get it from
-    ``async_setup_queue_advancement``; unlisted targets get it dynamically
-    from ``playback.async_play_on_chromecast`` (D4).
-    """
+    """Build the state-change handler for the configured targets."""
     @callback
     def _async_state_changed(event: Any) -> None:
         old_state = event.data.get("old_state")
         new_state = event.data.get("new_state")
 
-        if old_state is None or new_state is None:
+        if new_state is None:
             return
 
         player = str(
             event.data.get("entity_id")
             or getattr(new_state, "entity_id", "")
         )
-        if not player:
+        if player not in runtime.playback_targets:
+            _LOGGER.debug("Tracking event skipped: player=%s reason=unlisted_target", player)
             return
+        _LOGGER.debug(
+            "Tracking event: player=%s old=%s new=%s session=%s",
+            player, getattr(old_state, "state", None), getattr(new_state, "state", None),
+            player in runtime.playback_sessions,
+        )
 
         _update_playback_session(
             runtime,
@@ -609,11 +645,7 @@ def _build_queue_advancement_handler(
         new_player_state = getattr(new_state, "state", None)
 
         if new_player_state in {"off", "unavailable"}:
-            # D3: final write before the session is popped so the Jellyfin
-            # position is persisted for off/unavailable transitions. The
-            # snapshot is captured before the pop; the background write runs
-            # after the synchronous pop, so it must use the snapshot — not
-            # the live dict, which is gone by then.
+            # Capture the position before removing the session; the task runs later.
             session = runtime.playback_sessions.get(player)
             entry.async_create_background_task(
                 hass,
@@ -622,12 +654,11 @@ def _build_queue_advancement_handler(
                     runtime,
                     player=player,
                     is_paused=True,
-                    session=session,
+                    session=dict(session) if isinstance(session, dict) else {},
                 ),
                 f"{DOMAIN} play sync {player}",
             )
             runtime.playback_sessions.pop(player, None)
-            _async_release_playback_session_listener(runtime, player)
             return
 
         # Pause write sync: when playback stops to a pause (not off/idle),
@@ -643,6 +674,7 @@ def _build_queue_advancement_handler(
                     runtime,
                     player=player,
                     is_paused=True,
+                    session=dict(runtime.playback_sessions.get(player) or {}),
                 ),
                 f"{DOMAIN} play sync {player}",
             )
@@ -651,11 +683,7 @@ def _build_queue_advancement_handler(
         # Preserve the original explicit source-level completion guardrails.
         if getattr(old_state, "state", None) != "playing":
             if new_player_state == "idle":
-                # D3: final write before the session is popped for the
-                # non-completion idle path (old_state not playing). The
-                # snapshot is captured before the pop; the background write
-                # runs after the synchronous pop, so it must use the
-                # snapshot — not the live dict, which is gone by then.
+                # Preserve the final position even after a pause followed by stop.
                 session = runtime.playback_sessions.get(player)
                 entry.async_create_background_task(
                     hass,
@@ -664,12 +692,11 @@ def _build_queue_advancement_handler(
                         runtime,
                         player=player,
                         is_paused=True,
-                        session=session,
+                        session=dict(session) if isinstance(session, dict) else {},
                     ),
                     f"{DOMAIN} play sync {player}",
                 )
                 runtime.playback_sessions.pop(player, None)
-                _async_release_playback_session_listener(runtime, player)
             return
 
         if getattr(new_state, "state", None) != "idle":
@@ -683,6 +710,7 @@ def _build_queue_advancement_handler(
                 player=player,
                 old_state=old_state,
                 new_state=new_state,
+                expected_session=runtime.playback_sessions.get(player),
             ),
             f"{DOMAIN} queue advancement {player}",
         )
@@ -697,22 +725,12 @@ def async_setup_queue_advancement(
 ) -> None:
     """Register state listeners for configured playback targets."""
 
-    # D4: release every dynamically-registered listener for unlisted
-    # targets at unload so nothing leaks past entry teardown. Registered
-    # before the early return below so it is present even when no playback
-    # targets are configured.
-    @callback
-    def _async_release_dynamic_listeners(_cancelled: Any = None) -> None:
-        for _player, listener_unsubscribe in list(
-            runtime.playback_session_listeners.items()
-        ):
-            runtime.playback_session_listeners.pop(_player, None)
-            listener_unsubscribe()
-
-    entry.async_on_unload(_async_release_dynamic_listeners)
-
     targets = tuple(runtime.playback_targets)
     runtime.queue_advancement_targets = targets
+    _LOGGER.debug(
+        "Tracking setup: entry=%s targets=%s interval_seconds=%s",
+        runtime.entry_id, targets, PLAYBACK_WRITESYNC_INTERVAL_SECONDS,
+    )
     if not targets:
         return
 

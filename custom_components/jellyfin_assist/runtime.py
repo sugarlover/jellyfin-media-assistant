@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -36,7 +37,7 @@ class JellyfinAssistRuntime:
     queue_advancement_targets: tuple[str, ...] = ()
     last_queue_advancement: dict[str, Any] | None = None
     playback_sessions: dict[str, dict[str, Any]] = field(default_factory=dict)
-    playback_session_listeners: dict[str, Any] = field(default_factory=dict)
+    playback_write_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
     voice_sentence_provisioning: "VoiceSentenceState | None" = None
     _config_entry: "Any | None" = field(default=None, repr=False)
     _hass: "Any | None" = field(default=None, repr=False)
@@ -55,13 +56,9 @@ class JellyfinAssistRuntime:
     async def async_trigger_reauth(self) -> None:
         """Start the config-entry re-authentication flow.
 
-        Called when a playback-position write is rejected (401) so the
-        stored user access token can be re-minted. ``ConfigEntry.async_start_reauth``
-        is a synchronous method that spawns a background reauth flow task;
-        this coroutine wrapper lets ``api.py`` do ``await _async_auth_refresh()``
-        per the c90cec8 contract. Best-effort: a failure here (already
-        reauthing, no flow manager, etc.) is logged and swallowed so it
-        cannot break the advancement sync loop.
+        Called when progress lacks valid user authentication. Home Assistant
+        schedules an interactive flow; this does not synchronously mint or
+        replace a token. Failures here must not interrupt playback.
         """
 
         entry = self._config_entry

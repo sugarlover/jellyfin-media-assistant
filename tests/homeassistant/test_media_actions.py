@@ -38,6 +38,7 @@ def runtime(queue_client: Any) -> JellyfinAssistRuntime:
         ),
         connection_info=None,
         queue_client=queue_client,
+        playback_targets=("media_player.attic_tv",),
     )
 
 

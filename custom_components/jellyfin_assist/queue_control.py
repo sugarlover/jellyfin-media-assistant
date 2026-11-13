@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from .configuration import require_playback_target
 from .const import DOMAIN, SERVICE_RESOLVE_MEDIA_PLAYER
 from .media_actions import async_play_item
 from .queue_store import QueueStoreError
@@ -32,6 +33,14 @@ def _body(response: Mapping[str, Any]) -> dict[str, Any]:
 
 
 async def _queue_call(runtime: JellyfinAssistRuntime, operation: str, **kwargs: Any) -> dict[str, Any]:
+    try:
+        require_playback_target(runtime.playback_targets, str(kwargs.get("player") or ""))
+    except ValueError as err:
+        return {
+            "status": 403,
+            "content": {"success": False, "status": "invalid_playback_target", "message": str(err)},
+            "headers": {},
+        }
     client = runtime.queue_client
     if client is None:
         return {
@@ -166,6 +175,13 @@ def _queue_unavailable(
     wording: str = "retrieve the Jellyfin Assist queue",
     spoken_wording: str = "retrieve the media queue",
 ) -> dict[str, Any]:
+    if int(response.get("status", 0) or 0) == 403:
+        message = str(_body(response).get("message") or "This media player is not configured for Jellyfin Assist.")
+        return _common_result(
+            success=False, status="invalid_playback_target", operation=operation,
+            intent=intent, message=message, media_player=media_player,
+            response=response, snapshot={}, item=None,
+        )
     name = _player_name(hass, media_player)
     message = f"I couldn't {wording} for {name}."
     result = _common_result(

@@ -273,177 +273,173 @@ def test_whole_series_api_query_preserves_episode_metadata() -> None:
     assert "IndexNumber" not in params
 
 
-def test_post_playing_items_uses_real_progress_route_and_params() -> None:
-    session = FakeSession([FakeResponse(204, None)])
-    client = JellyfinApiClient(
-        session, "http://host", "secret", user_id="user-1", user_token="usertoken"
-    )
+@pytest.mark.parametrize("is_paused", [False, True])
+def test_post_playing_items_verifies_identity_and_persisted_ticks(is_paused: bool) -> None:
+    session = FakeSession([
+        FakeResponse(200, {"Id": "USER-1"}),
+        FakeResponse(204, None),
+        FakeResponse(200, {"UserData": {"PlaybackPositionTicks": 3_600_000_000}}),
+    ])
+    client = JellyfinApiClient(session, "http://host", "secret", user_id="user-1", user_token="usertoken")
 
-    result = run(
-        client.async_post_playing_items(
-            item_id="item/1",
-            position_ticks=10510625055,
-            is_paused=True,
-        )
-    )
-
-    # 204 No Content is treated as success and returns None.
-    assert result is None
-    call = session.calls[0]
-    assert call["method"] == "POST"
-    assert call["url"] == (
-        "http://host/Users/user-1/PlayingItems/item%2F1/Progress"
-    )
-    # Query params, not a JSON body: positionTicks + isPaused.
-    assert call["params"] == {
-        "positionTicks": "10510625055",
-        "isPaused": "true",
-    }
+    assert run(client.async_post_playing_items(item_id="item/1", position_ticks=3_600_000_000, is_paused=is_paused)) is None
+    assert [call["method"] for call in session.calls] == ["GET", "POST", "GET"]
+    assert session.calls[0]["url"] == "http://host/Users/Me"
+    call = session.calls[1]
+    assert call["url"] == "http://host/Users/user-1/PlayingItems/item%2F1/Progress"
+    assert call["params"] == {"positionTicks": "3600000000", "isPaused": str(is_paused).lower()}
     assert "json" not in call
+    assert session.calls[2]["url"] == "http://host/Users/user-1/Items/item%2F1"
+    assert all(call["headers"]["X-Emby-Token"] == "usertoken" for call in session.calls)
 
 
-def test_post_playing_items_is_paused_false_encodes_false() -> None:
-    session = FakeSession([FakeResponse(204, None)])
-    client = JellyfinApiClient(
-        session, "http://host", "secret", user_id="user-1", user_token="usertoken"
-    )
-
-    run(
-        client.async_post_playing_items(
-            item_id="item-1",
-            position_ticks=500000000,
-            is_paused=False,
-        )
-    )
-
-    assert session.calls[0]["params"] == {
-        "positionTicks": "500000000",
-        "isPaused": "false",
-    }
+@pytest.mark.parametrize("saved", [0, None, "3600000000", float("nan"), float("inf"), True, -1])
+def test_progress_204_without_persistence_is_a_failure(saved: Any) -> None:
+    session = FakeSession([
+        FakeResponse(200, {"Id": "user-1"}),
+        FakeResponse(204, None),
+        *[FakeResponse(200, {"UserData": {"PlaybackPositionTicks": saved}}) for _ in range(3)],
+    ])
+    client = JellyfinApiClient(session, "http://host", "secret", user_id="user-1", user_token="usertoken")
+    with pytest.raises(JellyfinInvalidResponseError, match="saved position differs"):
+        run(client.async_post_playing_items(item_id="item", position_ticks=3_600_000_000, is_paused=False))
 
 
-def test_post_playing_items_rejects_wrong_route() -> None:
-    client = JellyfinApiClient(
-        FakeSession([]), "http://host", "secret", user_id="user-1"
-    )
+@pytest.mark.parametrize("offset", [-20_000_000, 0, 20_000_000])
+def test_progress_readback_accepts_small_clock_difference(offset: int) -> None:
+    session = FakeSession([
+        FakeResponse(200, {"Id": "user-1"}), FakeResponse(204, None),
+        FakeResponse(200, {"UserData": {"PlaybackPositionTicks": 3_600_000_000 + offset}}),
+    ])
+    client = JellyfinApiClient(session, "http://host", "secret", user_id="user-1", user_token="usertoken")
+    run(client.async_post_playing_items(item_id="item", position_ticks=3_600_000_000, is_paused=False))
+    assert len(session.calls) == 3
 
+
+def test_progress_readback_retries_stale_reads_without_reposting() -> None:
+    session = FakeSession([
+        FakeResponse(200, {"Id": "user-1"}), FakeResponse(204, None),
+        FakeResponse(200, {"UserData": {"PlaybackPositionTicks": 0}}),
+        FakeResponse(200, {"UserData": {"PlaybackPositionTicks": 3_000_000_000}}),
+        FakeResponse(200, {"UserData": {"PlaybackPositionTicks": 3_600_000_000}}),
+    ])
+    client = JellyfinApiClient(session, "http://host", "secret", user_id="user-1", user_token="usertoken")
+    run(client.async_post_playing_items(item_id="item", position_ticks=3_600_000_000, is_paused=True))
+    assert [call["method"] for call in session.calls] == ["GET", "POST", "GET", "GET", "GET"]
+
+
+@pytest.mark.parametrize("requested, saved", [
+    (3_600_000_000, 3_579_999_999), (3_600_000_000, 3_620_000_001), (10_000_000, 0),
+])
+def test_progress_readback_rejects_stale_or_zero_positions(requested: int, saved: int) -> None:
+    session = FakeSession([
+        FakeResponse(200, {"Id": "user-1"}), FakeResponse(204, None),
+        *[FakeResponse(200, {"UserData": {"PlaybackPositionTicks": saved}}) for _ in range(3)],
+    ])
+    client = JellyfinApiClient(session, "http://host", "secret", user_id="user-1", user_token="usertoken")
+    with pytest.raises(JellyfinInvalidResponseError, match="after 3 reads"):
+        run(client.async_post_playing_items(item_id="item", position_ticks=requested, is_paused=True))
+    assert len([call for call in session.calls if call["method"] == "POST"]) == 1
+
+
+def test_progress_readback_accepts_explicit_zero() -> None:
+    session = FakeSession([
+        FakeResponse(200, {"Id": "user-1"}), FakeResponse(204, None),
+        FakeResponse(200, {"UserData": {"PlaybackPositionTicks": 0}}),
+    ])
+    client = JellyfinApiClient(session, "http://host", "secret", user_id="user-1", user_token="usertoken")
+    run(client.async_post_playing_items(item_id="item", position_ticks=0, is_paused=True))
+
+
+def test_progress_rejects_wrong_authenticated_user_without_post() -> None:
+    session = FakeSession([FakeResponse(200, {"Id": "other-user"})])
+    client = JellyfinApiClient(session, "http://host", "secret", user_id="user-1", user_token="usertoken")
+    with pytest.raises(JellyfinAuthenticationError, match="different user"):
+        run(client.async_post_playing_items(item_id="item", position_ticks=500, is_paused=True))
+    assert [call["method"] for call in session.calls] == ["GET"]
+
+
+def test_progress_requires_user_token_and_requests_reauthentication() -> None:
+    session = FakeSession([])
+    client = JellyfinApiClient(session, "http://host", "secret", user_id="user-1")
+    refreshes = []
+    async def refresh() -> None:
+        refreshes.append(True)
+    with pytest.raises(JellyfinAuthenticationError, match="user access token"):
+        run(client.async_post_playing_items(item_id="item", position_ticks=500, is_paused=True, _async_auth_refresh=refresh))
+    assert session.calls == []
+    assert refreshes == [True]
+
+
+@pytest.mark.parametrize("route", [
+    "/Items", "/Users/user-1/PlayingItems", "/PlayingItems/item-1/Progress",
+    "/Users/user-1/PlayingItems/item-1/Progress/unexpected",
+    "/Users/other-user/PlayingItems/item-1/Progress",
+])
+def test_progress_rejects_every_route_outside_exact_contract(route: str) -> None:
+    client = JellyfinApiClient(FakeSession([]), "http://host", "secret", user_id="user-1")
     with pytest.raises(JellyfinApiError, match="blocks non-GET"):
-        run(client._request("POST", "/Users/user-1/PlayingItems", params={}))
+        run(client._request("POST", route, params={}, _item_id="item-1"))
 
 
 def test_post_playing_items_rejects_unexpected_options() -> None:
-    client = JellyfinApiClient(
-        FakeSession([]), "http://host", "secret", user_id="user-1"
-    )
-
+    client = JellyfinApiClient(FakeSession([]), "http://host", "secret", user_id="user-1")
     with pytest.raises(JellyfinApiError, match="Unsupported write"):
-        run(
-            client._request(
-                "POST",
-                "/Users/user-1/PlayingItems/item-1/Progress",
-                params={},
-                _item_id="item-1",
-                json={"x": 1},
-            )
-        )
+        run(client._request("POST", "/Users/user-1/PlayingItems/item-1/Progress", params={}, _item_id="item-1", json={"x": 1}))
 
 
 def test_headers_prefer_user_token_over_api_key() -> None:
-    client = JellyfinApiClient(
-        FakeSession([]), "http://host", "secret", user_token="usertoken"
-    )
-
-    headers = client._headers
-    assert headers["X-Emby-Token"] == "usertoken"
-    assert 'Token="usertoken"' in headers["Authorization"]
+    client = JellyfinApiClient(FakeSession([]), "http://host", "secret", user_token="usertoken")
+    assert client._headers["X-Emby-Token"] == "usertoken"
+    assert 'Token="usertoken"' in client._headers["Authorization"]
 
 
 def test_headers_fall_back_to_api_key_without_token() -> None:
     client = JellyfinApiClient(FakeSession([]), "http://host", "secret")
-
-    headers = client._headers
-    assert headers["X-Emby-Token"] == "secret"
-    assert 'Token="secret"' in headers["Authorization"]
+    assert client._headers["X-Emby-Token"] == "secret"
 
 
-def test_post_playing_items_refreshes_token_once_on_401() -> None:
-    refresh_calls = {"count": 0}
-
+def test_post_playing_items_refreshes_changed_token_once_on_401() -> None:
+    session = FakeSession([
+        FakeResponse(200, {"Id": "user-1"}), FakeResponse(401, None),
+        FakeResponse(200, {"Id": "user-1"}), FakeResponse(204, None),
+        FakeResponse(200, {"UserData": {"PlaybackPositionTicks": 500}}),
+    ])
+    client = JellyfinApiClient(session, "http://host", "secret", user_id="user-1", user_token="stale")
+    refreshes = []
     async def refresh() -> None:
-        refresh_calls["count"] += 1
+        refreshes.append(True)
         client.user_token = "newtoken"
-
-    session = FakeSession(
-        [
-            FakeResponse(401, None),
-            FakeResponse(204, None),
-        ]
-    )
-    client = JellyfinApiClient(
-        session, "http://host", "secret", user_id="user-1", user_token="stale"
-    )
-
-    run(
-        client.async_post_playing_items(
-            item_id="item-1",
-            position_ticks=500,
-            is_paused=True,
-            _async_auth_refresh=refresh,
-        )
-    )
-
-    # Exactly one refresh attempt, then a successful retry (204).
-    assert refresh_calls["count"] == 1
-    assert len(session.calls) == 2
-    assert session.calls[0]["headers"]["X-Emby-Token"] == "stale"
-    assert session.calls[1]["headers"]["X-Emby-Token"] == "newtoken"
+    run(client.async_post_playing_items(item_id="item", position_ticks=500, is_paused=True, _async_auth_refresh=refresh))
+    assert refreshes == [True]
+    assert session.calls[1]["headers"]["X-Emby-Token"] == "stale"
+    assert session.calls[3]["headers"]["X-Emby-Token"] == "newtoken"
 
 
-def test_post_playing_items_raises_auth_error_when_401_without_refresh() -> None:
-    session = FakeSession([FakeResponse(401, None)])
-    client = JellyfinApiClient(
-        session, "http://host", "secret", user_id="user-1", user_token="stale"
-    )
-
-    with pytest.raises(JellyfinAuthenticationError):
-        run(
-            client.async_post_playing_items(
-                item_id="item-1",
-                position_ticks=500,
-                is_paused=True,
-            )
-        )
-
-
-def test_post_playing_items_401_only_retried_once_not_loop() -> None:
-    refresh_calls = {"count": 0}
-
+@pytest.mark.parametrize("new_token", [None, "newtoken"])
+def test_progress_does_not_loop_or_retry_unchanged_credentials(new_token: str | None) -> None:
+    session = FakeSession([
+        FakeResponse(200, {"Id": "user-1"}), FakeResponse(401, None),
+        FakeResponse(200, {"Id": "user-1"}), FakeResponse(401, None),
+    ])
+    client = JellyfinApiClient(session, "http://host", "secret", user_id="user-1", user_token="stale")
+    refreshes = []
     async def refresh() -> None:
-        refresh_calls["count"] += 1
-        client.user_token = "still-401"
-
-    session = FakeSession(
-        [
-            FakeResponse(401, None),
-            FakeResponse(401, None),
-        ]
-    )
-    client = JellyfinApiClient(
-        session, "http://host", "secret", user_id="user-1", user_token="stale"
-    )
-
+        refreshes.append(True)
+        if new_token:
+            client.user_token = new_token
     with pytest.raises(JellyfinAuthenticationError):
-        run(
-            client.async_post_playing_items(
-                item_id="item-1",
-                position_ticks=500,
-                is_paused=True,
-                _async_auth_refresh=refresh,
-            )
-        )
+        run(client.async_post_playing_items(item_id="item", position_ticks=500, is_paused=True, _async_auth_refresh=refresh))
+    assert refreshes == [True]
+    assert len([c for c in session.calls if c["method"] == "POST"]) == (2 if new_token else 1)
 
-    # One refresh then one final 401 — no infinite loop.
-    assert refresh_calls["count"] == 1
+
+@pytest.mark.parametrize("status", [401, 403, 404, 500])
+def test_progress_http_failure_surfaces_without_readback(status: int) -> None:
+    session = FakeSession([FakeResponse(200, {"Id": "user-1"}), FakeResponse(status, None)])
+    client = JellyfinApiClient(session, "http://host", "secret", user_id="user-1", user_token="usertoken")
+    with pytest.raises(JellyfinApiError):
+        run(client.async_post_playing_items(item_id="item", position_ticks=500, is_paused=True))
     assert len(session.calls) == 2
 
 

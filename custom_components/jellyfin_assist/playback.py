@@ -10,12 +10,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import logging
 from typing import Any, Mapping
 
-from homeassistant.helpers.event import async_track_state_change_event
-
+from .configuration import require_playback_target
 from .playback_strategy import ChromecastPlaybackStrategy
 from .runtime import JellyfinAssistRuntime
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class ChromecastPlaybackError(RuntimeError):
@@ -100,6 +103,18 @@ async def async_prepare_playback_item(
     )
 
 
+def _resume_ticks(item: Mapping[str, Any], override: int | None) -> int | None:
+    """Use the same effective offset for the media URL and tracking session."""
+
+    if override is not None:
+        if override < 0:
+            raise ValueError("Start position cannot be negative")
+        return int(override)
+    user_data = item.get("UserData")
+    ticks = user_data.get("PlaybackPositionTicks") if isinstance(user_data, Mapping) else None
+    return int(ticks) if isinstance(ticks, (int, float)) and ticks > 0 else None
+
+
 def build_play_media_data(
     runtime: JellyfinAssistRuntime,
     target_entity_id: str,
@@ -123,16 +138,7 @@ def build_play_media_data(
         ],
     }
 
-    # Extract PlaybackPositionTicks from UserData for resume support.
-    start_position_ticks: int | None = None
-    if force_start_position_ticks is not None:
-        start_position_ticks = force_start_position_ticks
-    else:
-        user_data = prepared.item.get("UserData")
-        if isinstance(user_data, Mapping):
-            raw_ticks = user_data.get("PlaybackPositionTicks")
-            if isinstance(raw_ticks, (int, float)) and raw_ticks > 0:
-                start_position_ticks = int(raw_ticks)
+    start_position_ticks = _resume_ticks(prepared.item, force_start_position_ticks)
 
     playback_info = ChromecastPlaybackStrategy.get_playback_info(
         runtime.client.server_url,
@@ -185,6 +191,8 @@ async def async_play_on_chromecast(
     if not normalized_target.startswith("media_player."):
         raise ValueError("Choose a Home Assistant media_player entity.")
 
+    require_playback_target(runtime.playback_targets, normalized_target)
+
     if not normalized_item_id:
         raise ValueError("Jellyfin item ID is required")
 
@@ -199,6 +207,8 @@ async def async_play_on_chromecast(
         normalized_target,
     )
 
+    start_position_ticks = _resume_ticks(prepared.item, start_position_ticks)
+
     service_data, playback_info = build_play_media_data(
         runtime,
         normalized_target,
@@ -207,16 +217,13 @@ async def async_play_on_chromecast(
         force_start_position_ticks=start_position_ticks,
     )
 
-    # D2: build_play_media_data already computes start_position_ticks
-    # (playback.py:125-133) from UserData.PlaybackPositionTicks. Thread
-    # it into the session dict so accumulated_playing_seconds starts
-    # at the resume offset instead of 0.
     resume_offset_seconds = (
         start_position_ticks / 10_000_000
         if start_position_ticks is not None
         else 0.0
     )
 
+    requested_at = datetime.now(timezone.utc)
     await hass.services.async_call(
         "media_player",
         "play_media",
@@ -239,11 +246,14 @@ async def async_play_on_chromecast(
         else None
     )
 
-    playing_started_at = (
-        datetime.now(timezone.utc)
-        if getattr(current_state, "state", None) == "playing"
-        else None
-    )
+    playing_started_at = None
+    if getattr(current_state, "state", None) == "playing":
+        state_started_at = getattr(current_state, "last_changed", None)
+        playing_started_at = (
+            max(requested_at, state_started_at)
+            if isinstance(state_started_at, datetime)
+            else datetime.now(timezone.utc)
+        )
 
     runtime.playback_sessions[normalized_target] = {
         "item_id": prepared.item_id,
@@ -254,32 +264,13 @@ async def async_play_on_chromecast(
         "playing_started_at": playing_started_at,
     }
 
-    # D4: if this target is not in the statically-configured playback
-    # targets, dynamically register a state-change listener so the
-    # session is tracked even for unlisted targets. The handler is the
-    # same one built for configured targets (advancement.py module-level
-    # factory), so sessions advance, pause-write, and off/idle pop just
-    # like a configured target. The listener is released on every pop
-    # path (handler-driven) plus at entry unload (registered in
-    # async_setup_queue_advancement), so nothing leaks.
-    if (
-        normalized_target not in runtime.playback_targets
-        and normalized_target not in runtime.playback_session_listeners
-    ):
-        entry = getattr(runtime, "_config_entry", None)
-        if entry is not None:
-            # Lazy import: advancement imports media_actions -> playback
-            # (this module) -> back to advancement would be a circular
-            # import at module load time. Deferring to call time avoids it.
-            from .advancement import _build_queue_advancement_handler
-
-            handler = _build_queue_advancement_handler(hass, entry, runtime)
-            unsubscribe = async_track_state_change_event(
-                hass,
-                [normalized_target],
-                handler,
-            )
-            runtime.playback_session_listeners[normalized_target] = unsubscribe
+    _LOGGER.debug(
+        "Tracking initialized: player=%s item=%s user=%s duration_seconds=%s "
+        "resume_ticks=%s state=%s playing_started_at=%s targets=%s",
+        normalized_target, prepared.item_id, runtime.user_id, duration_seconds,
+        start_position_ticks, getattr(current_state, "state", None),
+        playing_started_at, runtime.playback_targets,
+    )
 
     return {
         "success": True,

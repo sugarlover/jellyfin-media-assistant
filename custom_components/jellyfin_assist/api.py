@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+import asyncio
 import json
+import logging
+import math
 from typing import Any
 from urllib.parse import quote
 
@@ -14,6 +17,10 @@ from .configuration import normalize_server_url
 from .const import DEFAULT_REQUEST_TIMEOUT_SECONDS, NAME, VERSION
 
 
+_LOGGER = logging.getLogger(__name__)
+_PROGRESS_READBACK_ATTEMPTS = 3
+_PROGRESS_READBACK_RETRY_SECONDS = 0.25
+_PROGRESS_READBACK_TOLERANCE_TICKS = 2 * 10_000_000
 
 
 # Kept byte-for-byte equivalent to the field set used by JellyHA 1.2.0 at
@@ -70,7 +77,7 @@ class JellyfinConnectionInfo:
 
 @dataclass(slots=True)
 class JellyfinApiClient:
-    """Minimal Home Assistant client restricted to read-only GET requests."""
+    """Home Assistant Jellyfin client with one narrowly scoped progress write."""
 
     session: ClientSession
     server_url: str
@@ -149,7 +156,7 @@ class JellyfinApiClient:
                 "/Progress"
             )
             endpoint_path = endpoint.lstrip("/")
-            if not endpoint_path.startswith(expected.lstrip("/")):
+            if endpoint_path != expected.lstrip("/"):
                 raise JellyfinApiError(
                     "Jellyfin Media Assistant blocks non-GET requests"
                 )
@@ -164,6 +171,12 @@ class JellyfinApiClient:
             _async_auth_refresh = kwargs.get("_async_auth_refresh")
             refresh_attempts = 0
             while True:
+                _LOGGER.debug(
+                    "Progress POST attempt: user=%s item=%s ticks=%s paused=%s auth=%s attempt=%s",
+                    self.user_id, kwargs.get("_item_id"), params.get("positionTicks"),
+                    params.get("isPaused"), "user_token" if self.user_token else "api_key",
+                    refresh_attempts + 1,
+                )
                 try:
                     async with self.session.post(
                         url,
@@ -172,13 +185,23 @@ class JellyfinApiClient:
                         ssl=self.verify_ssl,
                         timeout=ClientTimeout(total=self.timeout_seconds),
                     ) as response:
+                        _LOGGER.debug(
+                            "Progress POST response: user=%s item=%s HTTP=%s",
+                            self.user_id, kwargs.get("_item_id"), response.status,
+                        )
                         if response.status == 401 and (
                             _async_auth_refresh is not None and refresh_attempts == 0
                         ):
-                            # The stored user token expired; mint a fresh one and
-                            # retry once before surfacing an auth failure.
+                            # HA normally starts an interactive reauth flow. Only
+                            # retry if the callback actually replaced the token.
                             refresh_attempts += 1
+                            previous_token = self.user_token
                             await _async_auth_refresh()
+                            if not self.user_token or self.user_token == previous_token:
+                                raise JellyfinAuthenticationError(
+                                    "Reauthentication requested; no new user token is available yet"
+                                )
+                            await self._async_verify_progress_user()
                             continue
                         if response.status in {401, 403}:
                             raise JellyfinAuthenticationError(
@@ -189,9 +212,8 @@ class JellyfinApiClient:
                                 f"Jellyfin returned temporary HTTP {response.status}"
                             )
                         if response.status >= 400:
-                            body = (await response.text())[:300]
                             raise JellyfinInvalidResponseError(
-                                f"Jellyfin returned HTTP {response.status}: {body}"
+                                f"Jellyfin progress returned HTTP {response.status}"
                             )
                         if response.status == 204:
                             return None
@@ -390,13 +412,11 @@ class JellyfinApiClient:
         device_id: str = "jellyfin-assist",
         _async_auth_refresh: Any = None,
     ) -> None:
-        """Report playback position via the real progress route.
+        """Report progress and verify the configured user's saved position.
 
-        POST /Users/{userId}/PlayingItems/{itemId}/Progress?positionTicks=…&isPaused=…
-        (response is 204 No Content).
-
-        :param _async_auth_refresh: optional zero-arg async callable that mints a
-            fresh ``user_token`` and updates :attr:`self`; invoked once on a 401.
+        The legacy route ignores userId; the authenticated session determines
+        which user is updated. Validate that identity and read UserData back so
+        a 204 that saved nothing cannot be reported as success.
         """
 
         normalized_item_id = item_id.strip()
@@ -404,6 +424,21 @@ class JellyfinApiClient:
             raise ValueError("Jellyfin item ID is required")
         if position_ticks < 0:
             raise ValueError("PositionTicks cannot be negative")
+
+        if not self.user_id.strip():
+            raise JellyfinAuthenticationError("Jellyfin user ID is required for progress writes")
+        if not self.user_token:
+            if _async_auth_refresh is not None:
+                await _async_auth_refresh()
+            raise JellyfinAuthenticationError(
+                "Playback progress requires a user access token; reauthenticate the integration"
+            )
+        try:
+            await self._async_verify_progress_user()
+        except JellyfinAuthenticationError:
+            if _async_auth_refresh is not None:
+                await _async_auth_refresh()
+            raise
 
         await self._request(
             "POST",
@@ -416,6 +451,54 @@ class JellyfinApiClient:
             _item_id=normalized_item_id,
             _async_auth_refresh=_async_auth_refresh,
         )
+        await self._async_verify_saved_position(normalized_item_id, position_ticks)
+
+    async def _async_verify_saved_position(self, item_id: str, position_ticks: int) -> None:
+        """Allow bounded readback lag and small clock differences, never a lost write.
+
+        Retry only GETs, not the progress POST. A positive position must not be
+        mistaken for a successful save when Jellyfin still reports zero.
+        """
+
+        saved_ticks: Any = None
+        for attempt in range(1, _PROGRESS_READBACK_ATTEMPTS + 1):
+            saved_item = await self.async_get_item(self.user_id, item_id)
+            user_data = saved_item.get("UserData")
+            saved_ticks = (
+                user_data.get("PlaybackPositionTicks")
+                if isinstance(user_data, Mapping) else None
+            )
+            _LOGGER.debug(
+                "Progress readback: user=%s item=%s requested_ticks=%s saved_ticks=%s attempt=%s",
+                self.user_id, item_id, position_ticks, saved_ticks, attempt,
+            )
+            if (
+                isinstance(saved_ticks, (int, float))
+                and not isinstance(saved_ticks, bool)
+                and math.isfinite(saved_ticks)
+                and saved_ticks >= 0
+                and (position_ticks == 0 or saved_ticks > 0)
+                and abs(saved_ticks - position_ticks) <= _PROGRESS_READBACK_TOLERANCE_TICKS
+            ):
+                return
+            if attempt < _PROGRESS_READBACK_ATTEMPTS:
+                await asyncio.sleep(_PROGRESS_READBACK_RETRY_SECONDS)
+        raise JellyfinInvalidResponseError(
+            f"Jellyfin accepted progress but saved position differs after "
+            f"{_PROGRESS_READBACK_ATTEMPTS} reads: requested={position_ticks}, "
+            f"saved={saved_ticks}. Check the user's resume settings and item duration."
+        )
+
+    async def _async_verify_progress_user(self) -> None:
+        """Ensure the actual authenticated user matches the configured identity."""
+
+        user = await self._request("GET", "/Users/Me")
+        actual_id = str(user.get("Id") or "") if isinstance(user, Mapping) else ""
+        if actual_id.casefold() != self.user_id.casefold():
+            raise JellyfinAuthenticationError(
+                "Progress token belongs to a different user than the configured Jellyfin user"
+            )
+        _LOGGER.debug("Progress authenticated user verified: user=%s", self.user_id)
 
     async def async_get_user_access_token(
         self,
