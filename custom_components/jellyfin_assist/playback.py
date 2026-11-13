@@ -160,16 +160,34 @@ def build_play_media_data(
             }
         )
 
+    # D1: resume offset travels as extra.current_time (seconds).
+    # Absent for fresh playback; present when a resume tick exists.
+    resume_offset_seconds: float | None = (
+        start_position_ticks / 10_000_000
+        if start_position_ticks is not None
+        else None
+    )
+
+    extra: dict[str, Any] = {
+        "title": metadata["title"],
+        "thumb": metadata["images"][0]["url"],
+        "autoplay": True,
+        "metadata": metadata,
+    }
+    if resume_offset_seconds is not None:
+        extra["current_time"] = resume_offset_seconds
+
+    # T1: pychromecast 14.0.10 defaults stream_type to "LIVE"; the Google
+    # default media receiver ignores currentTime on LIVE streams.
+    # BUFFERED is required for direct-play VOD so the seek takes effect.
+    if playback_info["content_type"].startswith("video/"):
+        extra["stream_type"] = "BUFFERED"
+
     service_data = {
         "entity_id": target_entity_id,
         "media_content_id": playback_info["media_url"],
         "media_content_type": playback_info["content_type"],
-        "extra": {
-            "title": metadata["title"],
-            "thumb": metadata["images"][0]["url"],
-            "autoplay": True,
-            "metadata": metadata,
-        },
+        "extra": extra,
     }
 
     return service_data, playback_info
@@ -223,6 +241,29 @@ async def async_play_on_chromecast(
         else 0.0
     )
 
+    # T3: guard the accumulated offset when the receiver will not honour
+    # the seek. The Cast receiver honours the seek in two cases:
+    #   1. Direct-play video: extra.current_time + stream_type=BUFFERED
+    #      are both sent (T2).
+    #   2. Audio: the URL StartPositionTicks param is honoured (T1).
+    # For transcode video (m3u8), the receiver runs a LIVE stream and
+    # ignores extra.current_time (T1 evidence), so the seek is NOT
+    # supported. In that case, do NOT seed the session with the resume
+    # offset; start at 0 so we never over-report progress.
+    seek_supported = (
+        start_position_ticks is not None
+        and (
+            (
+                playback_info["content_type"].startswith("video/")
+                and "/master.m3u8" not in playback_info["media_url"]
+            )
+            or playback_info["content_type"].startswith("audio/")
+        )
+    )
+    accumulated_initial = (
+        resume_offset_seconds if seek_supported else 0.0
+    )
+
     requested_at = datetime.now(timezone.utc)
     await hass.services.async_call(
         "media_player",
@@ -260,7 +301,7 @@ async def async_play_on_chromecast(
         "requested_item_id": prepared.requested_item_id,
         "duration_seconds": duration_seconds,
         "start_position_ticks": start_position_ticks,
-        "accumulated_playing_seconds": resume_offset_seconds,
+        "accumulated_playing_seconds": accumulated_initial,
         "playing_started_at": playing_started_at,
     }
 

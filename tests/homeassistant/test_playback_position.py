@@ -158,9 +158,17 @@ def test_url_and_session_share_effective_resume_offset(monkeypatch: Any, overrid
     hass = FakePlaybackHass(None)
     monkeypatch.setattr(ChromecastPlaybackStrategy, "discover_chromecast_model", lambda hass, player: ("Unknown", False))
     result = asyncio.run(async_play_on_chromecast(hass, rt, target_entity_id=PLAYER, item_id=ITEM, start_position_ticks=override))
-    assert f"StartPositionTicks={expected}" in hass.services.calls[0][2]["media_content_id"]
+    # D1: the resume offset travels as extra.current_time (seconds) on the
+    # play_media payload.
+    extra = hass.services.calls[0][2]["extra"]
+    assert extra["current_time"] == expected / 10_000_000
     assert result["start_position_ticks"] == expected
-    assert rt.playback_sessions[PLAYER]["accumulated_playing_seconds"] == expected / 10_000_000
+    # This test item has no MediaStreams -> unknown codec -> transcode (m3u8).
+    # Under T3's seek guard, the Cast receiver does NOT honour the seek on a
+    # transcode/LIVE stream, so accumulated_playing_seconds is 0.0 even
+    # though a resume offset exists. start_position_ticks and extra.current_time
+    # still carry the effective offset (D3 consistency with the media URL).
+    assert rt.playback_sessions[PLAYER]["accumulated_playing_seconds"] == 0.0
 
 
 def test_playing_state_arrives_during_service_call(monkeypatch: Any) -> None:

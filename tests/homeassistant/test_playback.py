@@ -298,6 +298,116 @@ def test_episode_play_media_payload_preserves_jellyha_metadata_contract() -> Non
     assert playback_mode(playback_info) == "direct_play"
 
 
+def test_play_media_extra_asserts_exact_resume_dict() -> None:
+    """D1/T2: a resume tick yields the exact extra dict with current_time (s)
+    and stream_type BUFFERED for direct-play video.
+
+    10:26 == 626 s == 6_260_000_000 ticks -> extra.current_time == 626.0.
+    """
+    client = FakePlaybackClient({})
+    runtime = runtime_for(client)
+
+    ticks = 6_260_000_000  # 10:26
+    prepared = PreparedPlaybackItem(
+        requested_item_id="episode-1",
+        item_id="episode-1",
+        item={
+            "Id": "episode-1",
+            "Name": "Pilot",
+            "Type": "Episode",
+            "SeriesName": "Example Series",
+            "ParentIndexNumber": 2,
+            "IndexNumber": 3,
+            "Container": "mkv",
+            "UserData": {"PlaybackPositionTicks": ticks},
+            "MediaStreams": [
+                {"Type": "Video", "Codec": "h264", "Height": 1080, "BitDepth": 8},
+                {"Type": "Audio", "Index": 1, "Codec": "aac", "Channels": 2},
+            ],
+        },
+    )
+
+    data, _playback_info = build_play_media_data(
+        runtime,
+        "media_player.example_chromecast",
+        prepared,
+        "Chromecast Ultra",
+    )
+
+    thumb_url = (
+        "http://jellyfin.local:8096/Items/episode-1/Images/Primary"
+        "?maxHeight=300&quality=90&api_key=secret-token"
+    )
+    assert data["extra"] == {
+        "title": "Pilot",
+        "thumb": thumb_url,
+        "autoplay": True,
+        "metadata": {
+            "title": "Pilot",
+            "images": [{"url": thumb_url}],
+            "metadataType": 1,
+            "seriesTitle": "Example Series",
+            "season": 2,
+            "episode": 3,
+        },
+        "current_time": 626.0,
+        "stream_type": "BUFFERED",
+    }
+
+
+def test_play_media_extra_omits_current_time_on_fresh_playback() -> None:
+    """D1/T2: no resume tick -> exact extra dict has no current_time, but
+    still carries stream_type BUFFERED for direct-play video."""
+    client = FakePlaybackClient({})
+    runtime = runtime_for(client)
+
+    prepared = PreparedPlaybackItem(
+        requested_item_id="episode-1",
+        item_id="episode-1",
+        item={
+            "Id": "episode-1",
+            "Name": "Pilot",
+            "Type": "Episode",
+            "SeriesName": "Example Series",
+            "ParentIndexNumber": 2,
+            "IndexNumber": 3,
+            "Container": "mkv",
+            "MediaStreams": [
+                {"Type": "Video", "Codec": "h264", "Height": 1080, "BitDepth": 8},
+                {"Type": "Audio", "Index": 1, "Codec": "aac", "Channels": 2},
+            ],
+        },
+    )
+
+    data, _playback_info = build_play_media_data(
+        runtime,
+        "media_player.example_chromecast",
+        prepared,
+        "Chromecast Ultra",
+    )
+
+    thumb_url = (
+        "http://jellyfin.local:8096/Items/episode-1/Images/Primary"
+        "?maxHeight=300&quality=90&api_key=secret-token"
+    )
+    extra = data["extra"]
+    assert "current_time" not in extra
+    assert extra == {
+        "title": "Pilot",
+        "thumb": thumb_url,
+        "autoplay": True,
+        "metadata": {
+            "title": "Pilot",
+            "images": [{"url": thumb_url}],
+            "metadataType": 1,
+            "seriesTitle": "Example Series",
+            "season": 2,
+            "episode": 3,
+        },
+        "stream_type": "BUFFERED",
+    }
+
+
 def test_successful_playback_creates_fresh_tracking_session(
     monkeypatch: Any,
 ) -> None:
@@ -525,7 +635,6 @@ def test_fresh_session_starts_accumulated_at_zero(
     monkeypatch: Any,
 ) -> None:
     """D2: without a resume offset, accumulated_playing_seconds is 0.0."""
-
     client = FakePlaybackClient(
         {
             "Id": "episode-7",
@@ -707,3 +816,181 @@ def test_chromecast_target_reaches_pychromecast_discovery(
     assert calls[0]["friendly_names"] == ["Example Chromecast"]
     assert calls[0]["discovery_timeout"] == 5.0
     assert result == ("Chromecast Ultra", False)
+
+
+def _run_play_for_session(
+    monkeypatch: Any,
+    item: dict[str, Any],
+    playback_info: dict[str, str],
+    monkey_patched_bpd: Any,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Shared helper: run async_play_on_chromecast with a stubbed
+    build_play_media_data and return (session, result)."""
+
+    client = FakePlaybackClient(dict(item))
+    runtime = runtime_for(client)
+
+    prepared = PreparedPlaybackItem(
+        requested_item_id=item.get("Id", "episode-7"),
+        item_id=item.get("Id", "episode-7"),
+        item=dict(item),
+    )
+
+    async def prepare(runtime_arg: Any, item_id: str) -> PreparedPlaybackItem:
+        assert runtime_arg is runtime
+        return prepared
+
+    monkeypatch.setattr(
+        "custom_components.jellyfin_assist.playback.async_prepare_playback_item",
+        prepare,
+    )
+    monkeypatch.setattr(
+        "custom_components.jellyfin_assist.playback."
+        "ChromecastPlaybackStrategy.discover_chromecast_model",
+        lambda hass, target: ("Home Assistant Voice", False),
+    )
+    monkeypatch.setattr(
+        "custom_components.jellyfin_assist.playback.build_play_media_data",
+        monkey_patched_bpd or (
+            lambda runtime_arg, target, prepared_arg, model, **_kwargs: (
+                {
+                    "entity_id": target,
+                    "media_content_id": playback_info["media_url"],
+                    "media_content_type": playback_info["content_type"],
+                },
+                dict(playback_info),
+            )
+        ),
+    )
+
+    hass = FakePlaybackHass(
+        SimpleNamespace(
+            entity_id="media_player.example",
+            state="playing",
+            attributes={},
+        )
+    )
+
+    result = run(
+        async_play_on_chromecast(
+            hass,
+            runtime,
+            target_entity_id="media_player.example",
+            item_id=prepared.item_id,
+        )
+    )
+    session = runtime.playback_sessions["media_player.example"]
+    return session, result
+
+
+def test_transcode_video_does_not_seed_accumulated_with_resume_offset(
+    monkeypatch: Any,
+) -> None:
+    """T3: transcode video (m3u8) — the Cast receiver does NOT honour
+    extra.current_time on a LIVE stream, so the accumulated offset must
+    be 0.0 even though a resume tick exists. No false progress."""
+
+    ticks = 3_600_000_000  # 360s == 6:00
+    item = {
+        "Id": "episode-7",
+        "Name": "Episode Seven",
+        "Type": "Episode",
+        "RunTimeTicks": 1_850_000_000,
+        "UserData": {"PlaybackPositionTicks": ticks},
+        "Container": "mkv",
+        "MediaStreams": [
+            {"Type": "Video", "Codec": "hevc", "Height": 4320, "BitDepth": 10},
+            {"Type": "Audio", "Index": 1, "Codec": "ac3", "Channels": 6},
+        ],
+    }
+
+    transcode_info = {
+        "media_url": (
+            "http://jellyfin.local:8096/Videos/episode-7/master.m3u8"
+            "?api_key=secret-tokenStartPositionTicks=3600000000"
+            "&MediaSourceId=episode-7"
+        ),
+        "content_type": "application/x-mpegURL",
+    }
+
+    session, result = _run_play_for_session(
+        monkeypatch, item, transcode_info, None
+    )
+
+    # start_position_ticks is stored (the offset the URL carries)
+    assert session["start_position_ticks"] == ticks
+    # T3: accumulated must be 0.0 — the receiver will not seek
+    assert session["accumulated_playing_seconds"] == 0.0
+    assert result["success"] is True
+
+
+def test_direct_play_video_seeds_accumulated_with_resume_offset(
+    monkeypatch: Any,
+) -> None:
+    """T3: direct-play video — extra.current_time + stream_type=BUFFERED
+    ARE sent, so the receiver will honour the seek. The accumulated
+    offset is seeded correctly from start_position_ticks / 1e7."""
+
+    ticks = 6_260_000_000  # 626s == 10:26
+    item = {
+        "Id": "episode-7",
+        "Name": "Episode Seven",
+        "Type": "Episode",
+        "RunTimeTicks": 1_850_000_000,
+        "UserData": {"PlaybackPositionTicks": ticks},
+        "Container": "mkv",
+        "MediaStreams": [
+            {"Type": "Video", "Codec": "h264", "Height": 1080, "BitDepth": 8},
+            {"Type": "Audio", "Index": 1, "Codec": "aac", "Channels": 2},
+        ],
+    }
+
+    direct_play_info = {
+        "media_url": (
+            "http://jellyfin.local:8096/Videos/episode-7/stream"
+            "?Static=true&api_key=secret-token&VideoCodec=h264&AudioCodec=aac"
+        ),
+        "content_type": "video/mp4",
+    }
+
+    session, result = _run_play_for_session(
+        monkeypatch, item, direct_play_info, None
+    )
+
+    assert session["start_position_ticks"] == ticks
+    assert session["accumulated_playing_seconds"] == 626.0
+    assert result["success"] is True
+
+
+def test_audio_play_seeds_accumulated_with_resume_offset(
+    monkeypatch: Any,
+) -> None:
+    """T3: audio — the URL StartPositionTicks param IS honoured by the
+    Cast receiver (T1 evidence), so the accumulated offset IS seeded."""
+
+    ticks = 1_200_000_000  # 120s == 2:00
+    item = {
+        "Id": "episode-7",
+        "Name": "Episode Seven",
+        "Type": "Episode",
+        "RunTimeTicks": 1_850_000_000,
+        "UserData": {"PlaybackPositionTicks": ticks},
+        "Container": "mp3",
+    }
+
+    audio_info = {
+        "media_url": (
+            "http://jellyfin.local:8096/Audio/episode-7/stream"
+            "?static=true&api_key=secret-token"
+            "&StartPositionTicks=1200000000"
+        ),
+        "content_type": "audio/mpeg",
+    }
+
+    session, result = _run_play_for_session(
+        monkeypatch, item, audio_info, None
+    )
+
+    assert session["start_position_ticks"] == ticks
+    assert session["accumulated_playing_seconds"] == 120.0
+    assert result["success"] is True

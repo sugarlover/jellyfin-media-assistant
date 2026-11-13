@@ -206,11 +206,13 @@ class ChromecastPlaybackStrategy:
 
         if should_direct_play:
             log_mode = "DIRECT (H.264)"
+            # StartPositionTicks is dead for the Cast receiver on direct-play
+            # video (D2): the receiver ignores the URL query param and only
+            # honours the Cast currentTime field sent via extra.current_time.
             media_url = (
                 f"{server_url}/Videos/{item_id}/stream"
                 f"?Static=true"
                 f"&api_key={api_key}"
-                f"{position_suffix}"
                 f"&VideoCodec=h264"
                 f"&AudioCodec=aac"
             )
