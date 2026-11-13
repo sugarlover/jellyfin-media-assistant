@@ -472,6 +472,21 @@ resume_pending_media_request:
       required: true
       selector:
         text: {}
+resume_album:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    album_id:
+      required: true
+      selector:
+        text: null
+    media_player:
+      required: true
+      selector:
+        text: {}
 repair_voice_sentences:
   fields:
     overwrite_user_modified:

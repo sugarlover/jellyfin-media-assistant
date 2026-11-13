@@ -523,6 +523,24 @@
         }
       }
     },
+    "resume_album": {
+      "name": "Resume album",
+      "description": "Resumes the Jellyfin Media Assist album that is incomplete. Fetches the album track plan, removes tracks already marked complete, queues the remaining tracks in album order, and starts the first remaining track.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Configuration",
+          "description": "Optional when exactly one Jellyfin Media Assistant configuration is loaded; otherwise choose the configuration to use."
+        },
+        "album_id": {
+          "name": "Album ID",
+          "description": "The Jellyfin music-album item ID to resume."
+        },
+        "media_player": {
+          "name": "Media player",
+          "description": "The media_player entity to start playback on."
+        }
+      }
+    },
     "repair_voice_sentences": {
       "name": "Repair voice sentences",
       "description": "Installs or repairs the Jellyfin Media Assistant custom Assist sentence file. User-modified managed sentences are preserved unless overwrite is explicitly enabled.",

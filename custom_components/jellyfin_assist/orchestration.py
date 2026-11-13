@@ -515,6 +515,7 @@ async def async_resolve_media_intent(
     series: str = "",
     season: int | None = None,
     episode: int | None = None,
+    reset_album_tracking: bool = True,
     context: Any = None,
 ) -> dict[str, Any]:
     """Resolve one media request into the established playback-plan contract."""
@@ -897,6 +898,19 @@ async def async_resolve_media_intent(
                 items=search_items,
                 media_type="MusicAlbum",
             )
+        # Reset album tracking before building the full-track queue (D3).
+        # Skipped when a resume request resolved the album: resuming must
+        # preserve the completed tracks, not clear them.
+        album_store = runtime.album_tracking_store
+        if reset_album_tracking and album_store is not None and runtime.user_id:
+            try:
+                await album_store.reset_album(runtime.user_id, selected_id)
+            except Exception:
+                _LOGGER.debug(
+                    "Album tracking: reset_album failed for %s; continuing",
+                    selected_id,
+                    exc_info=True,
+                )
         plan = [
             _album_track_item(raw, album_name=selected_name, album_artist_name=album_artist)
             for raw in album_items
@@ -1189,6 +1203,50 @@ async def async_media_orchestrator(
     resolved_year = _optional_int(resolution.get("year")) or _optional_int(year)
     resolved_season = _optional_int(resolution.get("season")) or _optional_int(season)
     resolved_episode = _optional_int(resolution.get("episode")) or _optional_int(episode)
+
+    # "Resume" re-uses the existing album search/resolution pipeline (D4/D6):
+    # resolve the requested album to a Jellyfin id, then delegate to the
+    # resume_album path, which builds the filtered (uncompleted) queue and
+    # plays the first remaining track at 0:00.
+    if requested_operation == "resume":
+        resume_resolution = await async_resolve_media_intent(
+            hass,
+            runtime,
+            query=resolved_query,
+            media_type="MusicAlbum",
+            artist=resolved_artist,
+            year=resolved_year,
+            series=resolved_series,
+            season=resolved_season,
+            episode=resolved_episode,
+            reset_album_tracking=False,
+            context=context,
+        )
+        if not resume_resolution.get("success", False):
+            resume_resolution.setdefault("operation", requested_operation)
+            resume_resolution.setdefault("media_player", resolved_player)
+            return resume_resolution
+        album_id = _text(resume_resolution.get("jellyfin_id"))
+        if not album_id:
+            return _base_result(
+                success=False,
+                status="album_not_found",
+                operation=requested_operation,
+                intent="MusicAlbum",
+                query=resolved_query,
+                message=f'I could not find the album "{resolved_query}" to resume.',
+                media_player=resolved_player,
+            )
+        resume_result = await async_resume_album(
+            hass,
+            runtime,
+            album_id=album_id,
+            media_player=resolved_player,
+            context=context,
+        )
+        resume_result.setdefault("operation", requested_operation)
+        resume_result.setdefault("media_player", resolved_player)
+        return resume_result
 
     resolver = await async_resolve_media_intent(
         hass,
@@ -1822,12 +1880,204 @@ async def async_resume_pending_media_request(
     )
 
 
+async def async_resume_album(
+    hass: Any,
+    runtime: JellyfinAssistRuntime,
+    *,
+    album_id: str,
+    media_player: str,
+    context: Any = None,
+) -> dict[str, Any]:
+    """Resume a partially completed album from the first unplayed track."""
+
+    album_store = runtime.album_tracking_store
+    user_id = runtime.user_id
+
+    # Fetch the full album track plan.
+    response = await _action(
+        hass,
+        runtime,
+        SERVICE_GET_ALBUM_TRACKS,
+        {"album_id": album_id},
+        context=context,
+    )
+    status = int(response.get("status", 0) or 0)
+    album_items = _raw_items(response)
+    if status != 200:
+        return _base_result(
+            success=False,
+            status="album_lookup_failed",
+            operation="resume_album",
+            intent="MusicAlbum",
+            query=None,
+            message=f"I could not retrieve the album tracks from Jellyfin.",
+            jellyfin_id=album_id,
+            media_player=media_player,
+            http_status=status,
+        )
+    if not album_items:
+        return _base_result(
+            success=False,
+            status="album_empty",
+            operation="resume_album",
+            intent="MusicAlbum",
+            query=None,
+            message="That album has no playable tracks in Jellyfin.",
+            jellyfin_id=album_id,
+            media_player=media_player,
+        )
+
+    # Determine completed track IDs from the album tracking store.
+    completed_ids: frozenset[str] = frozenset()
+    if album_store is not None and user_id:
+        try:
+            completed_ids = album_store.completed_ids(user_id, album_id)
+        except Exception:
+            _LOGGER.debug(
+                "Album tracking: completed_ids failed for %s; continuing",
+                album_id,
+                exc_info=True,
+            )
+
+    # Build the full plan, then filter out already-completed tracks.
+    full_plan = [
+        _album_track_item(
+            raw,
+            album_name=_text(raw.get("Album")) or "Album",
+            album_artist_name=_text(raw.get("AlbumArtist")) or _text(",".join(raw.get("Artists") or [])) if isinstance(raw.get("Artists"), Sequence) else "",
+        )
+        for raw in album_items
+    ]
+    plan = [
+        item for item in full_plan
+        if _text(item.get("id")) not in completed_ids
+    ]
+
+    if not plan:
+        return _base_result(
+            success=False,
+            status="album_complete",
+            operation="resume_album",
+            intent="MusicAlbum",
+            query=None,
+            message="All tracks in this album are already complete.",
+            jellyfin_id=album_id,
+            media_player=media_player,
+            total_tracks=len(full_plan),
+            completed_tracks=len(completed_ids),
+        )
+
+    # Enact the play tail: prepare session, clear queue, add remaining tracks,
+    # play the first remaining track at 0:00 (no start_position_ticks).
+    session = await async_prepare_play_session(hass, runtime, media_player=media_player)
+    if not session.get("success", False):
+        return _base_result(
+            success=False,
+            status="repeat_reset_failed",
+            operation="resume_album",
+            intent="MusicAlbum",
+            query=None,
+            message=f"I could not reset the repeat settings for {_state_friendly_name(hass, media_player)}.",
+            jellyfin_id=album_id,
+            media_player=media_player,
+            repeat_reset_response=session,
+        )
+
+    clear_response = await _action(
+        hass,
+        runtime,
+        SERVICE_QUEUE_CLEAR,
+        {"media_player": media_player},
+        context=context,
+    )
+    if int(clear_response.get("status", 0) or 0) != 200:
+        return _base_result(
+            success=False,
+            status="queue_clear_failed",
+            operation="resume_album",
+            intent="MusicAlbum",
+            query=None,
+            message="I could not clear the media queue.",
+            jellyfin_id=album_id,
+            media_player=media_player,
+            queue_response=clear_response,
+        )
+
+    last_queue_response: dict[str, Any] = clear_response
+    for item in plan:
+        item_type = _text(item.get("type"))
+        queue_response = await _action(
+            hass,
+            runtime,
+            SERVICE_QUEUE_ADD,
+            {
+                "media_player": media_player,
+                "id": _text(item.get("id")),
+                "name": _text(item.get("name")),
+                "type": item_type,
+                "artist": _text(item.get("artist_name")) or _text(item.get("album_artist")),
+                "album": _text(item.get("album")),
+                "series": "",
+                "season": "",
+                "episode": "",
+            },
+            context=context,
+        )
+        last_queue_response = queue_response
+        if int(queue_response.get("status", 0) or 0) != 200:
+            return _base_result(
+                success=False,
+                status="queue_add_failed",
+                operation="resume_album",
+                intent="MusicAlbum",
+                query=None,
+                message=f"I could not add {_text(item.get('name')) or 'a track'} to the media queue.",
+                jellyfin_id=item.get("id"),
+                item=item,
+                media_player=media_player,
+                queue_response=queue_response,
+            )
+
+    first_item = plan[0]
+    playback = await async_play_item(
+        hass,
+        runtime,
+        item=first_item,
+        media_player=media_player,
+    )
+    success = bool(playback.get("success", False))
+    description = _clean_message(_pending_direct_description(first_item))
+    message = (
+        f"Resuming album: playing {description} on {_state_friendly_name(hass, media_player)}."
+        if success
+        else f"Queued {len(plan)} remaining track{'s' if len(plan) != 1 else ''}, but playback failed."
+    )
+    return _base_result(
+        success=success,
+        status="playing" if success else "playback_failed",
+        operation="resume_album",
+        intent="MusicAlbum",
+        query=None,
+        message=message,
+        jellyfin_id=first_item.get("id"),
+        item=first_item,
+        playback_plan=plan,
+        media_player=media_player,
+        total_tracks=len(full_plan),
+        completed_tracks=len(completed_ids),
+        remaining_tracks=len(plan),
+        queue_response=last_queue_response,
+        playback_response=playback,
+    )
+
+
 __all__ = [
     "async_media_orchestrator",
     "async_play_pending_media",
     "async_resolve_episode_title",
     "async_resolve_media_intent",
     "async_resolve_tv_episode",
+    "async_resume_album",
     "async_resume_pending_media_request",
     "normalize_jellyfin_item",
 ]

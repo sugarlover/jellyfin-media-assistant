@@ -67,6 +67,7 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
         JellyfinConnectionError,
         JellyfinInvalidResponseError,
     )
+    from .album_tracking_store import AlbumTrackingStore, AlbumTrackingStoreError
     from .queue_store import NativeQueueStore, QueueStoreError
     from .runtime import JellyfinAssistRuntime
 
@@ -104,6 +105,25 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
         await queue_client.async_load()
     except QueueStoreError as err:
         raise ConfigEntryNotReady("Jellyfin Media Assistant queue storage could not be loaded") from err
+
+    album_storage_key = f"{DOMAIN}.album-tracking.{entry.entry_id}"
+    album_backend = Store[dict[str, Any]](
+        hass,
+        1,
+        album_storage_key,
+        private=True,
+        atomic_writes=True,
+    )
+    album_tracking_store = AlbumTrackingStore(
+        album_backend,
+        storage_key=album_storage_key,
+    )
+    try:
+        await album_tracking_store.async_load()
+    except AlbumTrackingStoreError as err:
+        raise ConfigEntryNotReady(
+            "Jellyfin Media Assistant album tracking storage could not be loaded"
+        ) from err
 
     async def snapshot_loader() -> Any:
         return await load_catalog_snapshot(
@@ -161,6 +181,7 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
         playback_targets=behavior.effective_playback_targets,
         queue_client=queue_client,
         queue_storage_key=queue_storage_key,
+        album_tracking_store=album_tracking_store,
     )
     entry.runtime_data.async_bind_entry(entry, hass)
 

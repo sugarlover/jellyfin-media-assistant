@@ -200,6 +200,193 @@ async def _async_notify_failure(
         )
 
 
+async def _async_mark_album_completion(
+    runtime: Any,
+    completed_item_id: str,
+) -> None:
+    """Mark a completed song in the album tracking store (if applicable).
+
+    Only marks when the completed item is audio belonging to a tracked
+    album. The membership check resolves the item's Jellyfin AlbumId
+    (rather than trusting the media type alone), so a confirmed
+    completion that is not an album member is silently skipped.
+    Failures are best-effort and never raise into the advancement path.
+    """
+
+    store = getattr(runtime, "album_tracking_store", None)
+    queue_client = runtime.queue_client
+    client = runtime.client
+    user_id = runtime.user_id
+
+    if store is None or queue_client is None or client is None or not user_id:
+        return
+
+    if not completed_item_id:
+        return
+
+    try:
+        item_response = await client.async_get_item(user_id, completed_item_id)
+    except Exception:
+        _LOGGER.debug(
+            "Album tracking: could not resolve item %s; skipping",
+            completed_item_id,
+            exc_info=True,
+        )
+        return
+
+    item_type = item_response.get("Type", "")
+    if item_type not in {"Audio", "MusicVideo"}:
+        return
+
+    album_id = item_response.get("AlbumId", "")
+    if not album_id:
+        return
+
+    try:
+        await store.mark_complete(user_id, album_id, completed_item_id)
+    except Exception:
+        _LOGGER.debug(
+            "Album tracking: mark_complete failed for %s in album %s; skipping",
+            completed_item_id,
+            album_id,
+            exc_info=True,
+        )
+        return
+
+
+async def _async_handle_album_completion(
+    hass: HomeAssistant,
+    runtime: JellyfinAssistRuntime,
+    *,
+    player: str,
+    completed_item_id: str,
+    repeat_queue: bool,
+) -> dict[str, Any] | None:
+    """Detect album completion and handle announce/stop/repeat.
+
+    Called from the ``queue_complete`` branch after the final track of an
+    album has been marked complete.  Returns a result dict when the album
+    is fully complete, or ``None`` when the completed item does not belong
+    to a tracked album or the album is not yet finished.
+    """
+    store = getattr(runtime, "album_tracking_store", None)
+    client = runtime.client
+    user_id = runtime.user_id
+    queue_client = runtime.queue_client
+
+    if store is None or client is None or not user_id or not completed_item_id:
+        return None
+
+    # Resolve the album_id from the completed item.
+    try:
+        item_response = await client.async_get_item(user_id, completed_item_id)
+    except Exception:
+        _LOGGER.debug(
+            "Album complete: could not resolve item %s",
+            completed_item_id,
+            exc_info=True,
+        )
+        return None
+
+    item_type = item_response.get("Type", "")
+    if item_type not in {"Audio", "MusicVideo"}:
+        return None
+
+    album_id = item_response.get("AlbumId", "")
+    if not album_id:
+        return None
+
+    # Get completed ids for this album.
+    try:
+        completed_ids = store.completed_ids(user_id, album_id)
+    except Exception:
+        _LOGGER.debug(
+            "Album complete: completed_ids failed for %s",
+            album_id,
+            exc_info=True,
+        )
+        return None
+
+    # Get total track count from Jellyfin.
+    try:
+        albums_response = await client.async_get_items(
+            user_id, parent_id=album_id, recursive=False
+        )
+    except Exception:
+        _LOGGER.debug(
+            "Album complete: album tracks fetch failed for %s",
+            album_id,
+            exc_info=True,
+        )
+        return None
+
+    album_items = (
+        albums_response.get("Items", [])
+        if isinstance(albums_response, dict)
+        else []
+    )
+    total_tracks = len(album_items)
+
+    if total_tracks == 0:
+        return None
+
+    # Album is complete only when every track has been marked.
+    if len(completed_ids) < total_tracks:
+        return None
+
+    # Announce "Album complete".
+    try:
+        await hass.services.async_call(
+            "media_player",
+            "announce",
+            {"entity_id": player, "message": "Album complete"},
+            blocking=False,
+        )
+    except Exception:
+        _LOGGER.debug(
+            "Album complete: announce failed for %s", player, exc_info=True
+        )
+
+    album_name = item_response.get("Album", "Album")
+    result: dict[str, Any] = {
+        "album_complete": True,
+        "album_id": album_id,
+        "album_name": album_name,
+        "total_tracks": total_tracks,
+        "repeat_queue": repeat_queue,
+    }
+
+    if repeat_queue:
+        # Repeat is enabled: reset the album tracking so the second pass
+        # (the queue store already wrapped the index back to track 1)
+        # re-marks completions.  No stop — playback continues through
+        # the repeated album via the normal queue-advance path.
+        try:
+            await store.reset_album(user_id, album_id)
+        except Exception:
+            _LOGGER.debug(
+                "Album complete: reset_album failed for %s",
+                album_id,
+                exc_info=True,
+            )
+        result["repeated"] = True
+    else:
+        # No repeat: stop the player — the album finished.
+        try:
+            await hass.services.async_call(
+                "media_player",
+                "stop",
+                {"entity_id": player},
+                blocking=False,
+            )
+        except Exception:
+            _LOGGER.debug(
+                "Album complete: stop failed for %s", player, exc_info=True
+            )
+
+    return result
+
+
 async def _async_write_sync_position(
     hass: HomeAssistant,
     runtime: JellyfinAssistRuntime,
@@ -454,6 +641,35 @@ async def _async_process_completion(
 
     if runtime.playback_sessions.get(player) is playback_session:
         runtime.playback_sessions.pop(player, None)
+
+    await _async_mark_album_completion(runtime, current_id)
+
+    # Album completion check: if every track in the album has been marked
+    # complete, announce and either stop (no repeat) or reset tracking
+    # (repeat — the queue store has already wrapped the index to track 1,
+    # so ``async_next`` below will advance to track 1 and the caller will
+    # play it).
+    repeat_queue = bool(queue_body.get("repeat_queue", False))
+    album_result = await _async_handle_album_completion(
+        hass,
+        runtime,
+        player=player,
+        completed_item_id=current_id,
+        repeat_queue=repeat_queue,
+    )
+    if album_result is not None and not repeat_queue:
+        # No repeat: the album finished and the player was stopped.
+        # Do NOT advance the queue (``async_next`` would log queue_complete
+        # on an already-finished album).
+        runtime.last_queue_advancement = {
+            "player": player,
+            "status": "album_complete",
+            "completed": current_id,
+            "completion_method": completion_method,
+            "album": album_result,
+        }
+        runtime.playback_sessions.pop(player, None)
+        return
 
     try:
         next_response = await queue_client.async_next(player)

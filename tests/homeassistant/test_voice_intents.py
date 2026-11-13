@@ -35,8 +35,8 @@ def run(coro: Any) -> Any:
 
 
 def test_native_intent_inventory_is_complete_and_described() -> None:
-    assert len(NATIVE_INTENT_TYPES) == 27
-    assert len(set(NATIVE_INTENT_TYPES)) == 27
+    assert len(NATIVE_INTENT_TYPES) == 28
+    assert len(set(NATIVE_INTENT_TYPES)) == 28
     assert set(NATIVE_INTENT_TYPES) == set(INTENT_DESCRIPTIONS)
     assert all(name.startswith("JellyfinAssist") for name in NATIVE_INTENT_TYPES)
 
@@ -254,3 +254,97 @@ def test_plain_play_request_does_not_set_start_position() -> None:
         {"movie_request": "Interstellar"},
     )
     assert "start_position_ticks" not in call.data
+
+
+def test_resume_album_request_routes_to_media_orchestrator_with_resume() -> None:
+    """V6: "resume <album>" resolves to the media_orchestrator with op=resume."""
+    call = build_voice_script_call(
+        "JellyfinAssistMusicAlbumResume",
+        {
+            "album_request": "  Weathered by Creed. ",
+            "media_player": "media_player.example_chromecast",
+        },
+    )
+
+    assert call.service == "media_orchestrator"
+    assert call.domain == "jellyfin_assist"
+    assert call.data == {
+        "query": "Weathered",
+        "artist": "Creed",
+        "media_type": "MusicAlbum",
+        "media_player": "media_player.example_chromecast",
+        "operation": "resume",
+    }
+
+
+def test_resume_album_request_without_player_still_routes_resume() -> None:
+    call = build_voice_script_call(
+        "JellyfinAssistMusicAlbumResume",
+        {"album_request": "2112"},
+    )
+
+    assert call.service == "media_orchestrator"
+    assert call.data == {
+        "query": "2112",
+        "artist": "",
+        "media_type": "MusicAlbum",
+        "media_player": "",
+        "operation": "resume",
+    }
+
+
+def test_resume_album_handler_calls_orchestrator_and_returns_speech(
+    tmp_path: Path,
+) -> None:
+    """Voice phrase -> intent -> service call, with the album query preserved."""
+    hass = FakeHass(tmp_path)
+    context = object()
+
+    async def orchestrator(call: ServiceCall) -> dict[str, Any]:
+        assert call.data == {
+            "query": "Rumours",
+            "artist": "Fleetwood Mac",
+            "media_type": "MusicAlbum",
+            "media_player": "media_player.example_chromecast",
+            "operation": "resume",
+        }
+        return {
+            "success": True,
+            "status": "playing",
+            "speak": "Resuming album: playing Track 3 on Example Chromecast.",
+        }
+
+    hass.services.async_register(
+        "jellyfin_assist",
+        "media_orchestrator",
+        orchestrator,
+    )
+    handler = JellyfinAssistIntentHandler("JellyfinAssistMusicAlbumResume")
+    intent_obj = Intent(
+        hass,
+        {
+            "album_request": {"value": "Rumours by Fleetwood Mac"},
+            "media_player": {"value": "media_player.example_chromecast"},
+        },
+        context=context,
+    )
+
+    response = run(handler.async_handle(intent_obj))
+
+    assert response.speech["plain"]["speech"] == (
+        "Resuming album: playing Track 3 on Example Chromecast."
+    )
+    assert hass.services.calls[-1] == {
+        "domain": "jellyfin_assist",
+        "service": "media_orchestrator",
+        "data": {
+            "query": "Rumours",
+            "artist": "Fleetwood Mac",
+            "media_type": "MusicAlbum",
+            "media_player": "media_player.example_chromecast",
+            "operation": "resume",
+        },
+        "blocking": True,
+        "return_response": True,
+        "context": context,
+    }

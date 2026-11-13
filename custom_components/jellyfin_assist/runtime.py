@@ -7,6 +7,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from .album_tracking_store import AlbumTrackingStore
 from .api import JellyfinApiClient, JellyfinConnectionInfo
 from .queue_store import NativeQueueStore
 from .search import CatalogManager
@@ -31,6 +32,7 @@ class JellyfinAssistRuntime:
     playback_targets: tuple[str, ...] = ()
     queue_client: NativeQueueStore | None = None
     queue_storage_key: str | None = None
+    album_tracking_store: AlbumTrackingStore | None = None
     pending_media_request: dict[str, Any] | None = None
     pending_selection: dict[str, Any] | None = None
     last_player_resolution: dict[str, Any] | None = None

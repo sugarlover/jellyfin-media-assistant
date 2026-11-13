@@ -88,7 +88,7 @@ def test_api_key_is_redacted(tmp_path: Path) -> None:
     }
     assert diagnostics["last_player_resolution"]["match_method"] == "normalized_exact"
     assert diagnostics["voice"] == {
-        "native_intent_handlers_expected": 27,
+        "native_intent_handlers_expected": 28,
         "native_intent_handlers_registered": 0,
         "all_native_intent_handlers_registered": False,
         "custom_sentences_packaged": True,

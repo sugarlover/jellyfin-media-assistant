@@ -153,6 +153,16 @@ intents:
           - "(add|queue) [the] album {album_request}"
 
 
+  JellyfinAssistMusicAlbumResume:
+    data:
+      - sentences:
+          # Resume a partially completed album from its first unplayed track.
+          # The album_request wildcard carries the album title (and an
+          # optional trailing "by <artist>" phrase) into the native handler.
+          - "resume [the] album {album_request} on {media_player}"
+          - "resume [the] album {album_request}"
+
+
   JellyfinAssistMusicSongPlay:
     data:
       - sentences:

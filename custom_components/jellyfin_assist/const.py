@@ -62,6 +62,7 @@ PLAYER_RESOLUTION_OPERATIONS: Final = (
     "repeat_off",
     "repeat_item_toggle",
     "repeat_queue_toggle",
+    "resume",
 )
 QUEUE_PLAYER_OPERATIONS: Final = frozenset(PLAYER_RESOLUTION_OPERATIONS[2:])
 
@@ -70,7 +71,9 @@ SERVICE_REFRESH_CATALOG: Final = "refresh_catalog"
 SERVICE_PLAY_ON_CHROMECAST: Final = "play_on_chromecast"
 SERVICE_GET_ITEM: Final = "get_item"
 SERVICE_RESOLVE_MEDIA_PLAYER: Final = "resolve_media_player"
+SERVICE_RESUME_ALBUM: Final = "resume_album"
 SERVICE_RESUME_MEDIA_REQUEST: Final = "resume_media_request"
+SERVICE_RESUME_PENDING: Final = "resume_media_request"
 SERVICE_SEARCH_SEASON: Final = "search_season"
 SERVICE_SEARCH_EPISODE: Final = "search_episode"
 SERVICE_SEARCH_EPISODE_TITLE: Final = "search_episode_title"

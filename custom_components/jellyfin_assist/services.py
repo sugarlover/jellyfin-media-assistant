@@ -72,6 +72,7 @@ from .const import (
     SERVICE_REFRESH_CATALOG,
     SERVICE_RESOLVE_MEDIA_PLAYER,
     SERVICE_RESUME_MEDIA_REQUEST,
+    SERVICE_RESUME_ALBUM,
     SERVICE_SEARCH_EPISODE,
     SERVICE_SEARCH_EPISODE_TITLE,
     SERVICE_SEARCH_SERIES,
@@ -97,6 +98,7 @@ from .queue_control import async_queue_command
 from .orchestration import (
     async_media_orchestrator,
     async_play_pending_media,
+    async_resume_album,
     async_resume_pending_media_request,
 )
 from .search import CatalogRefreshError, SUPPORTED_CATALOG_MEDIA_TYPES
@@ -158,6 +160,14 @@ RESOLVE_MEDIA_PLAYER_SCHEMA = vol.Schema(
 RESUME_MEDIA_REQUEST_SCHEMA = vol.Schema(
     {
         vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_MEDIA_PLAYER): cv.string,
+    }
+)
+
+RESUME_ALBUM_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_ALBUM_ID): cv.string,
         vol.Required(ATTR_MEDIA_PLAYER): cv.string,
     }
 )
@@ -254,7 +264,7 @@ MEDIA_ORCHESTRATOR_SCHEMA = vol.Schema(
         vol.Required(ATTR_QUERY): cv.string,
         vol.Optional(ATTR_MEDIA_PLAYER): cv.string,
         vol.Optional(ATTR_MEDIA_PLAYER_NAME): cv.string,
-        vol.Optional(ATTR_OPERATION, default="play"): vol.In(("play", "add")),
+        vol.Optional(ATTR_OPERATION, default="play"): vol.In(("play", "add", "resume")),
         vol.Optional(ATTR_MEDIA_TYPE): cv.string,
         vol.Optional(ATTR_ARTIST): cv.string,
         vol.Optional(ATTR_YEAR): object,
@@ -1071,6 +1081,25 @@ async def async_handle_resume_pending_media_request(
     )
 
 
+async def async_handle_resume_album(
+    hass: HomeAssistant,
+    call: ServiceCall,
+) -> ServiceResponse:
+    """Resume a partially completed album from the first unplayed track."""
+
+    runtime = _resolve_runtime(hass, call)
+    album_id = _clean_text(call.data.get(ATTR_ALBUM_ID))
+    if not album_id:
+        raise _validation_error("invalid_album_id", "Choose a Jellyfin album ID.")
+    return await async_resume_album(
+        hass,
+        runtime,
+        album_id=album_id,
+        media_player=_clean_text(call.data.get(ATTR_MEDIA_PLAYER)),
+        context=getattr(call, "context", None),
+    )
+
+
 async def async_handle_repair_voice_sentences(
     hass: HomeAssistant,
     call: ServiceCall,
@@ -1144,6 +1173,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         (SERVICE_MEDIA_ORCHESTRATOR, MEDIA_ORCHESTRATOR_SCHEMA, async_handle_media_orchestrator),
         (SERVICE_PLAY_PENDING_MEDIA, PLAY_PENDING_MEDIA_SCHEMA, async_handle_play_pending_media),
         (SERVICE_RESUME_PENDING_MEDIA_REQUEST, RESUME_PENDING_MEDIA_REQUEST_SCHEMA, async_handle_resume_pending_media_request),
+        (SERVICE_RESUME_ALBUM, RESUME_ALBUM_SCHEMA, async_handle_resume_album),
         (SERVICE_QUEUE_COMMAND, QUEUE_COMMAND_SCHEMA, async_handle_queue_command),
     )
     for service_name, schema, handler in high_level_media_actions:

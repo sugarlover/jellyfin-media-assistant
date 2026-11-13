@@ -6,7 +6,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Mapping
 
 from tests.homeassistant.ha_stubs import (
     FakeEntry,
@@ -17,6 +17,7 @@ from tests.homeassistant.ha_stubs import (
 install_homeassistant_stubs()
 
 from custom_components.jellyfin_assist.advancement import (
+    _async_mark_album_completion,
     _async_process_completion,
     _build_queue_advancement_handler,
     _estimate_playback_percent,
@@ -1295,3 +1296,218 @@ def test_completing_idle_does_not_double_write(tmp_path: Path) -> None:
     assert not any(
         "play sync" in name for name, _coro in entry.background_tasks
     )
+
+
+def _album_store():
+    class _FakeBackend:
+        def __init__(self) -> None:
+            self.data: dict[str, Any] = {
+                "schema_version": 1,
+                "albums": {},
+            }
+
+        async def async_load(self) -> dict[str, Any] | None:
+            return self.data
+
+        async def async_save(self, data: Mapping[str, Any]) -> None:
+            self.data = dict(data)
+
+    from custom_components.jellyfin_assist.album_tracking_store import (
+        AlbumTrackingStore,
+    )
+
+    backend = _FakeBackend()
+    store = AlbumTrackingStore(backend, storage_key="jma.album-tracking.test")
+    return backend, store
+
+
+def _album_client(item: dict[str, Any]):
+    class _Client:
+        async def async_get_item(self, user_id: str, item_id: str) -> dict[str, Any]:
+            if item_id == "abc123":
+                return dict(item)
+            raise AssertionError(f"unexpected item lookup: {item_id}")
+
+        async def async_post_playing_items(self, **_: Any) -> None:
+            raise AssertionError("not used")
+
+    return _Client()
+
+
+def _runtime_with_album(
+    store: Any,
+    client: Any,
+    *,
+    queue_client: Any,
+) -> Any:
+    rt = runtime(queue_client)
+    rt.user_id = "user123"
+    rt.album_tracking_store = store
+    rt.client = client
+    return rt
+
+
+async def _noop_play(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    return {"success": True, "status": "playing"}
+
+
+def test_album_song_marked_at_ninety_five_percent(tmp_path: Path, monkeypatch: Any) -> None:
+    """D2: confirmed completion at the 95% threshold marks the song complete."""
+
+    class QueueClient:
+        async def async_get(self, player: str) -> dict[str, Any]:
+            return {
+                "status": 200,
+                "content": {"success": True, "current": {"id": "abc123", "name": "Song"}},
+                "headers": {},
+            }
+
+        async def async_next(self, player: str) -> dict[str, Any]:
+            return {
+                "status": 200,
+                "content": {"success": True, "current": None, "upcoming_count": 0},
+                "headers": {},
+            }
+
+    monkeypatch.setattr(
+        "custom_components.jellyfin_assist.advancement.async_play_item",
+        _noop_play,
+    )
+    _backend, store = _album_store()
+    client = _album_client({"Id": "abc123", "Type": "Audio", "AlbumId": "album456"})
+    rt = _runtime_with_album(store, client, queue_client=QueueClient())
+    hass = FakeHass(tmp_path)
+
+    old_state, new_state = media_states(position=95, duration=100)
+
+    run(
+        _async_process_completion(
+            hass,
+            rt,
+            player="media_player.example",
+            old_state=old_state,
+            new_state=new_state,
+        )
+    )
+
+    assert "abc123" in store.completed_ids("user123", "album456")
+
+
+def test_album_song_marked_at_natural_end(tmp_path: Path, monkeypatch: Any) -> None:
+    """D2: a song that plays to its natural end (100%) marks complete."""
+
+    class QueueClient:
+        async def async_get(self, player: str) -> dict[str, Any]:
+            return {
+                "status": 200,
+                "content": {"success": True, "current": {"id": "abc123", "name": "Song"}},
+                "headers": {},
+            }
+
+        async def async_next(self, player: str) -> dict[str, Any]:
+            return {
+                "status": 200,
+                "content": {"success": True, "current": None, "upcoming_count": 0},
+                "headers": {},
+            }
+
+    monkeypatch.setattr(
+        "custom_components.jellyfin_assist.advancement.async_play_item",
+        _noop_play,
+    )
+    _backend, store = _album_store()
+    client = _album_client({"Id": "abc123", "Type": "Audio", "AlbumId": "album456"})
+    rt = _runtime_with_album(store, client, queue_client=QueueClient())
+    hass = FakeHass(tmp_path)
+
+    old_state, new_state = media_states(position=100, duration=100)
+
+    run(
+        _async_process_completion(
+            hass,
+            rt,
+            player="media_player.example",
+            old_state=old_state,
+            new_state=new_state,
+        )
+    )
+
+    assert "abc123" in store.completed_ids("user123", "album456")
+
+
+def test_album_song_not_marked_on_skip(tmp_path: Path) -> None:
+    """D2: a skipped stop (under the threshold) must not mark the song."""
+
+    class QueueClient:
+        async def async_get(self, player: str) -> dict[str, Any]:
+            return {
+                "status": 200,
+                "content": {"success": True, "current": {"id": "abc123", "name": "Song"}},
+                "headers": {},
+            }
+
+        async def async_next(self, player: str) -> dict[str, Any]:
+            raise AssertionError("must not advance")
+
+    _backend, store = _album_store()
+    client = _album_client({"Id": "abc123", "Type": "Audio", "AlbumId": "album456"})
+    rt = _runtime_with_album(store, client, queue_client=QueueClient())
+    hass = FakeHass(tmp_path)
+
+    old_state, new_state = media_states(position=20, duration=100)
+    new_state.last_changed = old_state.last_changed + timedelta(seconds=25)
+
+    run(
+        _async_process_completion(
+            hass,
+            rt,
+            player="media_player.example",
+            old_state=old_state,
+            new_state=new_state,
+        )
+    )
+
+    assert "abc123" not in store.completed_ids("user123", "album456")
+    assert rt.last_queue_advancement["status"] == "completion_rejected"
+
+
+def test_non_album_audio_not_marked(tmp_path: Path, monkeypatch: Any) -> None:
+    """D2: confirmed completion of a non-album member must not mark."""
+
+    class QueueClient:
+        async def async_get(self, player: str) -> dict[str, Any]:
+            return {
+                "status": 200,
+                "content": {"success": True, "current": {"id": "abc123", "name": "Movie"}},
+                "headers": {},
+            }
+
+        async def async_next(self, player: str) -> dict[str, Any]:
+            return {
+                "status": 200,
+                "content": {"success": True, "current": None, "upcoming_count": 0},
+                "headers": {},
+            }
+
+    monkeypatch.setattr(
+        "custom_components.jellyfin_assist.advancement.async_play_item",
+        _noop_play,
+    )
+    _backend, store = _album_store()
+    client = _album_client({"Id": "abc123", "Type": "Movie", "AlbumId": ""})
+    rt = _runtime_with_album(store, client, queue_client=QueueClient())
+    hass = FakeHass(tmp_path)
+
+    old_state, new_state = media_states(position=95, duration=100)
+
+    run(
+        _async_process_completion(
+            hass,
+            rt,
+            player="media_player.example",
+            old_state=old_state,
+            new_state=new_state,
+        )
+    )
+
+    assert "abc123" not in store.completed_ids("user123", "album456")

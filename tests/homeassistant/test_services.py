@@ -220,6 +220,7 @@ def test_registration_is_idempotent(tmp_path: Path) -> None:
         ("jellyfin_assist", "refresh_catalog"),
         ("jellyfin_assist", "repair_voice_sentences"),
         ("jellyfin_assist", "resolve_media_player"),
+        ("jellyfin_assist", "resume_album"),
         ("jellyfin_assist", "resume_media_request"),
         ("jellyfin_assist", "resume_pending_media_request"),
         ("jellyfin_assist", "search"),
