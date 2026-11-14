@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Mapping
 from typing import Any
 
@@ -70,7 +69,13 @@ async def async_play_item(
     media_player: str,
     start_position_ticks: int | None = None,
 ) -> dict[str, Any]:
-    """Turn on a target and play one resolved Jellyfin item."""
+    """Play one resolved Jellyfin item.
+
+    A single media_player.play_media call wakes an idle Chromecast and
+    launches the default media receiver with the actual video URL, so no
+    pre-step turn_on is required. (A prior turn_on cast the HA branded
+    splash image, leaving a blue background around letterboxed video.)
+    """
 
     try:
         require_playback_target(runtime.playback_targets, media_player)
@@ -103,31 +108,10 @@ async def async_play_item(
             "media_player": media_player,
         }
 
-    try:
-        await hass.services.async_call(
-            "media_player",
-            "turn_on",
-            {"entity_id": media_player},
-            blocking=True,
-        )
-    except Exception:
-        # Preserve the historical script's focus on the playback result. Some
-        # integrations do not implement turn_on but are still playable.
-        pass
-
-    for _ in range(120):
-        state = hass.states.get(media_player) if getattr(hass, "states", None) else None
-        if state is None or getattr(state, "state", None) != "unavailable":
-            break
-        await asyncio.sleep(0.25)
-    else:
-        return {
-            "success": False,
-            "status": "player_unavailable",
-            "message": f"{_player_name(hass, media_player)} did not become available.",
-            "item": dict(item),
-            "media_player": media_player,
-        }
+    # No explicit turn_on: HA's Cast integration play_media wakes an idle
+    # Cast and launches the default media receiver directly. The former
+    # turn_on call cast CAST_SPLASH (the HA branded image), producing a
+    # blue branded background around letterboxed videos.
 
     try:
         playback = await async_play_on_chromecast(

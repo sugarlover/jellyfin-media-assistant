@@ -70,6 +70,39 @@ def test_play_item_preserves_playback_response_contract(tmp_path: Path, monkeypa
     assert result["item_id"] == "movie1"
 
 
+def test_play_item_does_not_call_turn_on(tmp_path: Path, monkeypatch: Any) -> None:
+    # Regression: a pre-step media_player.turn_on cast HA's CAST_SPLASH
+    # branded image, leaving a blue background around letterboxed video.
+    # play_media alone wakes the idle Cast and launches the receiver, so
+    # turn_on must not be issued and no availability polling may run.
+    hass = FakeHass(
+        tmp_path,
+        states=[FakeState("media_player.attic_tv", friendly_name="Attic TV", state="idle")],
+    )
+    rt = runtime(object())
+
+    async def native_play(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {"success": True, "status": "playing"}
+
+    monkeypatch.setattr(media_actions, "async_play_on_chromecast", native_play)
+    result = run(
+        async_play_item(
+            hass,
+            rt,
+            item={"id": "movie1", "name": "Example Movie", "type": "Movie", "year": 2026},
+            media_player="media_player.attic_tv",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["status"] == "playing"
+    # No turn_on service call is issued to the media player.
+    turn_on_calls = [
+        call for call in hass.services.calls if call["service"] == "turn_on"
+    ]
+    assert turn_on_calls == []
+
+
 def test_prepare_play_session_disables_both_repeat_modes(tmp_path: Path) -> None:
     class Queue:
         def __init__(self) -> None:
