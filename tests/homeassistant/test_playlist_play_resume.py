@@ -29,8 +29,11 @@ from custom_components.jellyfin_assist.const import (
     SERVICE_GET_PLAYLIST_TRACKS,
     SERVICE_QUEUE_ADD,
     SERVICE_QUEUE_CLEAR,
+    SERVICE_RESOLVE_MEDIA_PLAYER,
 )
 from custom_components.jellyfin_assist.orchestration import (
+    async_media_orchestrator,
+    async_play_pending_media,
     async_play_playlist,
     async_resume_playlist,
 )
@@ -454,3 +457,138 @@ class TestResumePlaylistFilterOnResume:
             ))
 
         assert runtime.queued_playlist_id == "playlist-1"
+
+
+# ---------------------------------------------------------------------------
+# pending_selection wiring: playlist multi-match -> "select number one"
+# ---------------------------------------------------------------------------
+
+_PLAYER = "media_player.example_chromecast"
+
+
+async def _resolve_and_playlist_action(
+    hass: Any,
+    runtime: Any,
+    service: str,
+    data: Any,
+    *,
+    context: Any = None,
+    tracks: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Fake _action: resolves the media player, then serves playlist flows."""
+    if service == SERVICE_RESOLVE_MEDIA_PLAYER:
+        return {
+            "success": True,
+            "media_player": data["media_player"],
+            "query": data["query"],
+            "media_type": data["media_type"],
+        }
+    return await _fake_action(hass, runtime, service, data, context=context, playlist_items=tracks or [])
+
+
+class TestPlaylistMultiMatchPendingSelection:
+    """A MusicPlaylist multi-match sets pending_selection and the spoken
+    message ends "Please select a number." so the numbered follow-up routes
+    through async_play_pending_media."""
+
+    def test_multi_match_sets_pending_selection_and_message(self) -> None:
+        runtime = _make_runtime()
+        hass = _make_fake_hass()
+        playlists = [
+            {"Id": "pl-1", "Name": "Kids Favorites", "Type": "MusicPlaylist"},
+            {"Id": "pl-2", "Name": "Kids Bedtime", "Type": "MusicPlaylist"},
+        ]
+        runtime.client.async_get_items = AsyncMock(return_value={"Items": playlists})
+
+        with patch(
+            "custom_components.jellyfin_assist.orchestration._action",
+            new=_resolve_and_playlist_action,
+        ):
+            result = run(async_media_orchestrator(
+                hass,
+                runtime,
+                query="kids",
+                media_player=_PLAYER,
+                media_type="MusicPlaylist",
+                operation="play",
+            ))
+
+        assert result["success"] is False
+        assert result["status"] == "multiple_matches"
+        assert result["message"].endswith("Please select a number.")
+        pending = runtime.pending_selection
+        assert isinstance(pending, dict)
+        assert [item["id"] for item in pending["items"]] == ["pl-1", "pl-2"]
+        assert pending["media_player"] == _PLAYER
+        assert pending["operation"] == "play"
+        assert pending["query"] == "kids"
+        assert pending["intent"] == "MusicPlaylist"
+
+    def test_selection_resolves_to_play_playlist_success(self) -> None:
+        runtime = _make_runtime(playlist_tracking_store=_FakePlaylistStore(completed=set()))
+        hass = _make_fake_hass()
+        playlists = [
+            {"Id": "pl-1", "Name": "Kids Favorites", "Type": "MusicPlaylist"},
+            {"Id": "pl-2", "Name": "Kids Bedtime", "Type": "MusicPlaylist"},
+        ]
+
+        async def fake_get_items(user_id: str, **kwargs: Any) -> dict[str, Any]:
+            if kwargs.get("search_term") == "Kids Favorites":
+                return {"Items": [playlists[0]]}
+            return {"Items": playlists}
+
+        runtime.client.async_get_items = AsyncMock(side_effect=fake_get_items)
+        runtime.client.async_get_item = AsyncMock(
+            return_value={"Id": "pl-1", "Name": "Kids Favorites", "Type": "MusicPlaylist"}
+        )
+
+        tracks = [
+            _make_raw_track("t1", "Track 1", 1),
+            _make_raw_track("t2", "Track 2", 2),
+        ]
+
+        async def _resolve_tracks(h, r, s, d, *, c=None, **kw):
+            return await _resolve_and_playlist_action(h, r, s, d, context=c, tracks=tracks)
+
+        with patch(
+            "custom_components.jellyfin_assist.orchestration._action",
+            new=_resolve_tracks,
+        ), patch(
+            "custom_components.jellyfin_assist.orchestration.async_prepare_play_session",
+            new=AsyncMock(return_value={"success": True}),
+        ), patch(
+            "custom_components.jellyfin_assist.orchestration.async_play_item",
+            new=AsyncMock(return_value={"success": True}),
+        ):
+            first = run(async_media_orchestrator(
+                hass,
+                runtime,
+                query="kids",
+                media_player=_PLAYER,
+                media_type="MusicPlaylist",
+                operation="play",
+            ))
+        assert first["success"] is False
+        assert isinstance(runtime.pending_selection, dict)
+        assert runtime.pending_selection is not None
+
+        with patch(
+            "custom_components.jellyfin_assist.orchestration._action",
+            new=_resolve_tracks,
+        ), patch(
+            "custom_components.jellyfin_assist.orchestration.async_prepare_play_session",
+            new=AsyncMock(return_value={"success": True}),
+        ), patch(
+            "custom_components.jellyfin_assist.orchestration.async_play_item",
+            new=AsyncMock(return_value={"success": True}),
+        ):
+            result = run(async_play_pending_media(hass, runtime, selection=1))
+
+        assert result["success"] is True
+        # The selection re-entered the orchestrator as a MusicPlaylist and
+        # delegated to async_play_playlist: the first track is queued/played.
+        assert result["jellyfin_id"] == "t1"
+        assert result["status"] == "playing"
+        assert result["intent"] == "MusicPlaylist"
+        # Successful resolution clears the pending selection.
+        assert runtime.pending_selection is None

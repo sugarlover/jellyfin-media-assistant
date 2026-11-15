@@ -31,7 +31,7 @@ from .runtime import JellyfinAssistRuntime
 from .series_selection import select_generic_series_episodes
 
 _PLAYABLE_ITEM_TYPES = frozenset({"Movie", "Episode", "Audio", "MusicVideo", "Video"})
-_CONTAINER_ITEM_TYPES = frozenset({"series", "musicalbum", "musicartist"})
+_CONTAINER_ITEM_TYPES = frozenset({"series", "musicalbum", "musicartist", "musicplaylist"})
 _WHITESPACE_RE = re.compile(r"\s+")
 _NORMALIZE_KEY_RE = re.compile(r"[^a-z0-9]+")
 
@@ -1357,6 +1357,19 @@ async def async_media_orchestrator(
             context=context,
         )
         if not playlist_resolution.get("success", False):
+            if playlist_resolution.get("status") == "multiple_matches":
+                pending_items = [dict(item) for item in playlist_resolution.get("items", []) if isinstance(item, Mapping)]
+                runtime.pending_selection = {
+                    "items": pending_items,
+                    "media_player": resolved_player,
+                    "operation": requested_operation,
+                    "query": playlist_resolution.get("query", resolved_query),
+                    "intent": "MusicPlaylist",
+                }
+                heading = f'I found {len(pending_items)} possible matches for "{playlist_resolution.get("query", resolved_query)}".'
+                choices = _pending_choice_text(pending_items)
+                pending_response = f"{heading}\n{choices}\n\nPlease select a number."
+                playlist_resolution["message"] = pending_response
             playlist_resolution.setdefault("operation", requested_operation)
             playlist_resolution.setdefault("media_player", resolved_player)
             return playlist_resolution
