@@ -32,6 +32,8 @@ INTENT_QUEUE_REPEAT_QUEUE_TOGGLE: Final = "JellyfinAssistQueueRepeatQueueToggle"
 INTENT_MUSIC_ALBUM_PLAY: Final = "JellyfinAssistMusicAlbumPlay"
 INTENT_MUSIC_ALBUM_ADD: Final = "JellyfinAssistMusicAlbumAdd"
 INTENT_MUSIC_ALBUM_RESUME: Final = "JellyfinAssistMusicAlbumResume"
+INTENT_MUSIC_PLAYLIST_PLAY: Final = "JellyfinAssistMusicPlaylistPlay"
+INTENT_MUSIC_PLAYLIST_RESUME: Final = "JellyfinAssistMusicPlaylistResume"
 INTENT_MUSIC_SONG_PLAY: Final = "JellyfinAssistMusicSongPlay"
 INTENT_MUSIC_SONG_ADD: Final = "JellyfinAssistMusicSongAdd"
 INTENT_MUSIC_ARTIST_PLAY: Final = "JellyfinAssistMusicArtistPlay"
@@ -62,6 +64,8 @@ NATIVE_INTENT_TYPES: Final = (
     INTENT_MUSIC_ALBUM_PLAY,
     INTENT_MUSIC_ALBUM_ADD,
     INTENT_MUSIC_ALBUM_RESUME,
+    INTENT_MUSIC_PLAYLIST_PLAY,
+    INTENT_MUSIC_PLAYLIST_RESUME,
     INTENT_MUSIC_SONG_PLAY,
     INTENT_MUSIC_SONG_ADD,
     INTENT_MUSIC_ARTIST_PLAY,
@@ -93,6 +97,8 @@ INTENT_DESCRIPTIONS: Final[dict[str, str]] = {
     INTENT_MUSIC_ALBUM_PLAY: "Play a specific Jellyfin music album.",
     INTENT_MUSIC_ALBUM_ADD: "Add a specific Jellyfin music album to the queue.",
     INTENT_MUSIC_ALBUM_RESUME: "Resume a partially completed Jellyfin music album from the first unplayed track.",
+    INTENT_MUSIC_PLAYLIST_PLAY: "Play an existing Jellyfin music playlist from the beginning.",
+    INTENT_MUSIC_PLAYLIST_RESUME: "Resume a partially completed Jellyfin music playlist from the first unplayed track.",
     INTENT_MUSIC_SONG_PLAY: "Play a specific Jellyfin song.",
     INTENT_MUSIC_SONG_ADD: "Add a specific Jellyfin song to the queue.",
     INTENT_MUSIC_ARTIST_PLAY: "Play available Jellyfin songs by a specific artist.",
@@ -127,6 +133,8 @@ _MEDIA_REQUESTS: Final[dict[str, tuple[str, str | None, str]]] = {
     INTENT_MUSIC_ALBUM_PLAY: ("album_request", "MusicAlbum", "play"),
     INTENT_MUSIC_ALBUM_ADD: ("album_request", "MusicAlbum", "add"),
     INTENT_MUSIC_ALBUM_RESUME: ("album_request", "MusicAlbum", "resume"),
+    INTENT_MUSIC_PLAYLIST_PLAY: ("playlist_request", "MusicPlaylist", "play"),
+    INTENT_MUSIC_PLAYLIST_RESUME: ("playlist_request", "MusicPlaylist", "resume"),
     INTENT_MUSIC_SONG_PLAY: ("song_request", "Audio", "play"),
     INTENT_MUSIC_SONG_ADD: ("song_request", "Audio", "add"),
     INTENT_MUSIC_ARTIST_PLAY: ("artist_request", "MusicArtist", "play"),

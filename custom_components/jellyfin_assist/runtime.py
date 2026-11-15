@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from .album_tracking_store import AlbumTrackingStore
 from .api import JellyfinApiClient, JellyfinConnectionInfo
+from .playlist_tracking_store import PlaylistTrackingStore
 from .queue_store import NativeQueueStore
 from .search import CatalogManager
 
@@ -33,6 +34,13 @@ class JellyfinAssistRuntime:
     queue_client: NativeQueueStore | None = None
     queue_storage_key: str | None = None
     album_tracking_store: AlbumTrackingStore | None = None
+    playlist_tracking_store: PlaylistTrackingStore | None = None
+    # Set by the play/resume playlist wiring (card 3) to the playlist id
+    # whose tracks are currently loaded in the queue, so the completion hook
+    # can mark a completed track against that playlist. ``None`` means no
+    # playlist is queued (album/native queue path) — the playlist store is
+    # then never touched, keeping the album flow byte-for-byte unchanged.
+    queued_playlist_id: str | None = None
     pending_media_request: dict[str, Any] | None = None
     pending_selection: dict[str, Any] | None = None
     last_player_resolution: dict[str, Any] | None = None

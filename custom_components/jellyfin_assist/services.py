@@ -27,6 +27,7 @@ from .const import (
     ATTR_ALBUM_ID,
     ATTR_ARTIST,
     ATTR_ARTIST_ID,
+    ATTR_PLAYLIST_ID,
     ATTR_CONFIG_ENTRY_ID,
     ATTR_MEDIA_TYPE,
     ATTR_MEDIA_PLAYER,
@@ -56,6 +57,7 @@ from .const import (
     QUEUE_PLAYER_OPERATIONS,
     SERVICE_GET_ALBUM_TRACKS,
     SERVICE_GET_ARTIST_TRACKS,
+    SERVICE_GET_PLAYLIST_TRACKS,
     SERVICE_GET_ITEM,
     SERVICE_PLAY_ON_CHROMECAST,
     SERVICE_QUEUE_ADD,
@@ -67,12 +69,14 @@ from .const import (
     SERVICE_QUEUE_COMMAND,
     SERVICE_MEDIA_ORCHESTRATOR,
     SERVICE_PLAY_PENDING_MEDIA,
+    SERVICE_PLAY_PLAYLIST,
     SERVICE_RESUME_PENDING_MEDIA_REQUEST,
     SERVICE_REPAIR_VOICE_SENTENCES,
     SERVICE_REFRESH_CATALOG,
     SERVICE_RESOLVE_MEDIA_PLAYER,
     SERVICE_RESUME_MEDIA_REQUEST,
     SERVICE_RESUME_ALBUM,
+    SERVICE_RESUME_PLAYLIST,
     SERVICE_SEARCH_EPISODE,
     SERVICE_SEARCH_EPISODE_TITLE,
     SERVICE_SEARCH_SERIES,
@@ -98,8 +102,10 @@ from .queue_control import async_queue_command
 from .orchestration import (
     async_media_orchestrator,
     async_play_pending_media,
+    async_play_playlist,
     async_resume_album,
     async_resume_pending_media_request,
+    async_resume_playlist,
 )
 from .search import CatalogRefreshError, SUPPORTED_CATALOG_MEDIA_TYPES
 from .voice_sentences import async_provision_voice_sentences
@@ -172,6 +178,22 @@ RESUME_ALBUM_SCHEMA = vol.Schema(
     }
 )
 
+PLAY_PLAYLIST_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_PLAYLIST_ID): cv.string,
+        vol.Required(ATTR_MEDIA_PLAYER): cv.string,
+    }
+)
+
+RESUME_PLAYLIST_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_PLAYLIST_ID): cv.string,
+        vol.Required(ATTR_MEDIA_PLAYER): cv.string,
+    }
+)
+
 SEARCH_SEASON_SCHEMA = vol.Schema(
     {
         vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
@@ -215,6 +237,13 @@ GET_ARTIST_TRACKS_SCHEMA = vol.Schema(
     {
         vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
         vol.Required(ATTR_ARTIST_ID): cv.string,
+    }
+)
+
+GET_PLAYLIST_TRACKS_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_PLAYLIST_ID): cv.string,
     }
 )
 
@@ -902,6 +931,23 @@ async def async_handle_get_artist_tracks(
     )
 
 
+async def async_handle_get_playlist_tracks(
+    hass: HomeAssistant,
+    call: ServiceCall,
+) -> ServiceResponse:
+    """Fetch ordered audio tracks for one Jellyfin playlist."""
+
+    runtime = _resolve_runtime(hass, call)
+    return await _async_query_items(
+        runtime,
+        parent_id=_clean_text(call.data.get(ATTR_PLAYLIST_ID)),
+        include_item_types="Audio",
+        recursive=True,
+        sort_by="ParentIndexNumber,IndexNumber",
+        sort_order="Ascending",
+    )
+
+
 async def _async_queue_call(
     runtime: JellyfinAssistRuntime,
     operation: str,
@@ -1100,6 +1146,44 @@ async def async_handle_resume_album(
     )
 
 
+async def async_handle_play_playlist(
+    hass: HomeAssistant,
+    call: ServiceCall,
+) -> ServiceResponse:
+    """Play a full, ordered playlist queue and reset its tracking store."""
+
+    runtime = _resolve_runtime(hass, call)
+    playlist_id = _clean_text(call.data.get(ATTR_PLAYLIST_ID))
+    if not playlist_id:
+        raise _validation_error("invalid_playlist_id", "Choose a Jellyfin playlist ID.")
+    return await async_play_playlist(
+        hass,
+        runtime,
+        playlist_id=playlist_id,
+        media_player=_clean_text(call.data.get(ATTR_MEDIA_PLAYER)),
+        context=getattr(call, "context", None),
+    )
+
+
+async def async_handle_resume_playlist(
+    hass: HomeAssistant,
+    call: ServiceCall,
+) -> ServiceResponse:
+    """Resume a partially completed playlist from the first unplayed track."""
+
+    runtime = _resolve_runtime(hass, call)
+    playlist_id = _clean_text(call.data.get(ATTR_PLAYLIST_ID))
+    if not playlist_id:
+        raise _validation_error("invalid_playlist_id", "Choose a Jellyfin playlist ID.")
+    return await async_resume_playlist(
+        hass,
+        runtime,
+        playlist_id=playlist_id,
+        media_player=_clean_text(call.data.get(ATTR_MEDIA_PLAYER)),
+        context=getattr(call, "context", None),
+    )
+
+
 async def async_handle_repair_voice_sentences(
     hass: HomeAssistant,
     call: ServiceCall,
@@ -1174,6 +1258,8 @@ async def async_register_services(hass: HomeAssistant) -> None:
         (SERVICE_PLAY_PENDING_MEDIA, PLAY_PENDING_MEDIA_SCHEMA, async_handle_play_pending_media),
         (SERVICE_RESUME_PENDING_MEDIA_REQUEST, RESUME_PENDING_MEDIA_REQUEST_SCHEMA, async_handle_resume_pending_media_request),
         (SERVICE_RESUME_ALBUM, RESUME_ALBUM_SCHEMA, async_handle_resume_album),
+        (SERVICE_PLAY_PLAYLIST, PLAY_PLAYLIST_SCHEMA, async_handle_play_playlist),
+        (SERVICE_RESUME_PLAYLIST, RESUME_PLAYLIST_SCHEMA, async_handle_resume_playlist),
         (SERVICE_QUEUE_COMMAND, QUEUE_COMMAND_SCHEMA, async_handle_queue_command),
     )
     for service_name, schema, handler in high_level_media_actions:
@@ -1236,6 +1322,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
             SERVICE_GET_ARTIST_TRACKS,
             GET_ARTIST_TRACKS_SCHEMA,
             async_handle_get_artist_tracks,
+        ),
+        (
+            SERVICE_GET_PLAYLIST_TRACKS,
+            GET_PLAYLIST_TRACKS_SCHEMA,
+            async_handle_get_playlist_tracks,
         ),
     )
     for service_name, schema, handler in native_item_queries:
@@ -1352,11 +1443,14 @@ async def async_register_services(hass: HomeAssistant) -> None:
 __all__ = [
     "GET_ALBUM_TRACKS_SCHEMA",
     "GET_ARTIST_TRACKS_SCHEMA",
+    "GET_PLAYLIST_TRACKS_SCHEMA",
     "GET_ITEM_ACTION_SCHEMA",
     "PLAY_ON_CHROMECAST_SCHEMA",
     "MEDIA_ORCHESTRATOR_SCHEMA",
     "PLAY_PENDING_MEDIA_SCHEMA",
     "RESUME_PENDING_MEDIA_REQUEST_SCHEMA",
+    "PLAY_PLAYLIST_SCHEMA",
+    "RESUME_PLAYLIST_SCHEMA",
     "QUEUE_ADD_SCHEMA",
     "QUEUE_GET_SCHEMA",
     "QUEUE_SET_REPEAT_SCHEMA",
@@ -1370,10 +1464,13 @@ __all__ = [
     "SEARCH_ACTION_SCHEMA",
     "async_handle_get_album_tracks",
     "async_handle_get_artist_tracks",
+    "async_handle_get_playlist_tracks",
     "async_handle_get_item",
     "async_handle_media_orchestrator",
     "async_handle_play_pending_media",
     "async_handle_resume_pending_media_request",
+    "async_handle_play_playlist",
+    "async_handle_resume_playlist",
     "async_handle_refresh_catalog",
     "async_handle_repair_voice_sentences",
     "async_handle_play_on_chromecast",

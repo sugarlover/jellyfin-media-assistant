@@ -248,6 +248,17 @@ get_artist_tracks:
       required: true
       selector:
         text: null
+get_playlist_tracks:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    playlist_id:
+      required: true
+      selector:
+        text: null
 queue_get:
   fields:
     config_entry_id:
@@ -480,6 +491,36 @@ resume_album:
         config_entry:
           integration: jellyfin_assist
     album_id:
+      required: true
+      selector:
+        text: null
+    media_player:
+      required: true
+      selector:
+        text: {}
+play_playlist:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    playlist_id:
+      required: true
+      selector:
+        text: null
+    media_player:
+      required: true
+      selector:
+        text: {}
+resume_playlist:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: jellyfin_assist
+    playlist_id:
       required: true
       selector:
         text: null

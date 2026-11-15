@@ -163,6 +163,26 @@ intents:
           - "resume [the] album {album_request}"
 
 
+  JellyfinAssistMusicPlaylistPlay:
+    data:
+      - sentences:
+          # Dedicated playlist phrasing. The playlist_request wildcard carries
+          # the playlist title into the native handler. These are the only
+          # playlist phrasings in v1 and must not overlap unqualified
+          # "play X" resolution.
+          - "(play|put on|start) [the] playlist {playlist_request} on {media_player}"
+          - "(play|put on|start) [the] playlist {playlist_request}"
+
+
+  JellyfinAssistMusicPlaylistResume:
+    data:
+      - sentences:
+          # Resume a partially completed playlist from its first unplayed
+          # track; the playlist_request wildcard carries the playlist title.
+          - "resume [the] playlist {playlist_request} on {media_player}"
+          - "resume [the] playlist {playlist_request}"
+
+
   JellyfinAssistMusicSongPlay:
     data:
       - sentences:
@@ -345,6 +365,9 @@ intents:
 lists:
 
   album_request:
+    wildcard: true
+
+  playlist_request:
     wildcard: true
 
   song_request:

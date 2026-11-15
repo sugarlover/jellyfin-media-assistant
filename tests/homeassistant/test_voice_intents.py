@@ -35,8 +35,8 @@ def run(coro: Any) -> Any:
 
 
 def test_native_intent_inventory_is_complete_and_described() -> None:
-    assert len(NATIVE_INTENT_TYPES) == 28
-    assert len(set(NATIVE_INTENT_TYPES)) == 28
+    assert len(NATIVE_INTENT_TYPES) == 30
+    assert len(set(NATIVE_INTENT_TYPES)) == 30
     assert set(NATIVE_INTENT_TYPES) == set(INTENT_DESCRIPTIONS)
     assert all(name.startswith("JellyfinAssist") for name in NATIVE_INTENT_TYPES)
 
@@ -274,6 +274,208 @@ def test_resume_album_request_routes_to_media_orchestrator_with_resume() -> None
         "media_type": "MusicAlbum",
         "media_player": "media_player.example_chromecast",
         "operation": "resume",
+    }
+
+
+def test_playlist_play_request_routes_to_media_orchestrator_with_play() -> None:
+    """Card 4: "play the playlist X" dispatches to media_orchestrator with op=play and media_type=MusicPlaylist."""
+    call = build_voice_script_call(
+        "JellyfinAssistMusicPlaylistPlay",
+        {
+            "playlist_request": "  My Coffee Mix. ",
+            "media_player": "media_player.example_chromecast",
+        },
+    )
+
+    assert call.service == "media_orchestrator"
+    assert call.domain == "jellyfin_assist"
+    assert call.data == {
+        "query": "My Coffee Mix",
+        "media_type": "MusicPlaylist",
+        "media_player": "media_player.example_chromecast",
+        "operation": "play",
+    }
+
+
+def test_playlist_play_request_without_player_still_routes_play() -> None:
+    """Card 4: playlist play without an explicit player still dispatches play."""
+    call = build_voice_script_call(
+        "JellyfinAssistMusicPlaylistPlay",
+        {"playlist_request": "Morning Groove"},
+    )
+
+    assert call.service == "media_orchestrator"
+    assert call.data == {
+        "query": "Morning Groove",
+        "media_type": "MusicPlaylist",
+        "media_player": "",
+        "operation": "play",
+    }
+
+
+def test_playlist_resume_request_routes_to_media_orchestrator_with_resume() -> None:
+    """Card 4: "resume the playlist X" dispatches to media_orchestrator with op=resume and media_type=MusicPlaylist."""
+    call = build_voice_script_call(
+        "JellyfinAssistMusicPlaylistResume",
+        {
+            "playlist_request": "  My Coffee Mix. ",
+            "media_player": "media_player.example_chromecast",
+        },
+    )
+
+    assert call.service == "media_orchestrator"
+    assert call.domain == "jellyfin_assist"
+    assert call.data == {
+        "query": "My Coffee Mix",
+        "media_type": "MusicPlaylist",
+        "media_player": "media_player.example_chromecast",
+        "operation": "resume",
+    }
+
+
+def test_playlist_resume_request_without_player_still_routes_resume() -> None:
+    """Card 4: playlist resume without an explicit player still dispatches resume."""
+    call = build_voice_script_call(
+        "JellyfinAssistMusicPlaylistResume",
+        {"playlist_request": "Evening Wind Down"},
+    )
+
+    assert call.service == "media_orchestrator"
+    assert call.data == {
+        "query": "Evening Wind Down",
+        "media_type": "MusicPlaylist",
+        "media_player": "",
+        "operation": "resume",
+    }
+
+
+def test_unqualified_play_request_does_not_use_playlist_type() -> None:
+    """Q3: unqualified "play X" must not change what "play X" does today.
+
+    The generic JellyfinAssistMediaPlay intent (media wildcard) resolves
+    through the catalog path and never sets media_type to MusicPlaylist,
+    so a playlist named X does not alter what "play X" does.
+    """
+    call = build_voice_script_call(
+        "JellyfinAssistMediaPlay",
+        {"media": "My Coffee Mix"},
+    )
+
+    # The generic play phrasing must NOT resolve to MusicPlaylist — it
+    # stays on the shared resolution path (no dedicated playlist media_type).
+    assert call.service == "media_orchestrator"
+    assert call.data.get("media_type") != "MusicPlaylist"
+    assert call.data["query"] == "My Coffee Mix"
+    assert call.data["operation"] == "play"
+
+
+def test_playlist_play_handler_calls_orchestrator_and_returns_speech(
+    tmp_path: Path,
+) -> None:
+    """Card 4: full voice path — "play the playlist X" -> intent -> service call."""
+    hass = FakeHass(tmp_path)
+    context = object()
+
+    async def orchestrator(call: ServiceCall) -> dict[str, Any]:
+        assert call.data == {
+            "query": "My Coffee Mix",
+            "media_type": "MusicPlaylist",
+            "media_player": "media_player.example_chromecast",
+            "operation": "play",
+        }
+        return {
+            "success": True,
+            "status": "playing",
+            "speak": "Playing playlist: My Coffee Mix on Example Chromecast.",
+        }
+
+    hass.services.async_register(
+        "jellyfin_assist",
+        "media_orchestrator",
+        orchestrator,
+    )
+    handler = JellyfinAssistIntentHandler("JellyfinAssistMusicPlaylistPlay")
+    intent_obj = Intent(
+        hass,
+        {
+            "playlist_request": {"value": "My Coffee Mix"},
+            "media_player": {"value": "media_player.example_chromecast"},
+        },
+        context=context,
+    )
+
+    response = run(handler.async_handle(intent_obj))
+
+    assert response.speech["plain"]["speech"] == (
+        "Playing playlist: My Coffee Mix on Example Chromecast."
+    )
+    assert hass.services.calls[-1] == {
+        "domain": "jellyfin_assist",
+        "service": "media_orchestrator",
+        "data": {
+            "query": "My Coffee Mix",
+            "media_type": "MusicPlaylist",
+            "media_player": "media_player.example_chromecast",
+            "operation": "play",
+        },
+        "blocking": True,
+        "return_response": True,
+        "context": context,
+    }
+
+
+def test_playlist_resume_handler_calls_orchestrator_and_returns_speech(
+    tmp_path: Path,
+) -> None:
+    """Card 4: full voice path — "resume the playlist X" -> intent -> service call."""
+    hass = FakeHass(tmp_path)
+    context = object()
+
+    async def orchestrator(call: ServiceCall) -> dict[str, Any]:
+        assert call.data == {
+            "query": "My Coffee Mix",
+            "media_type": "MusicPlaylist",
+            "media_player": "media_player.example_chromecast",
+            "operation": "resume",
+        }
+        return {
+            "success": True,
+            "status": "playing",
+            "speak": "Resuming playlist: playing Track 3 on Example Chromecast.",
+        }
+
+    hass.services.async_register(
+        "jellyfin_assist",
+        "media_orchestrator",
+        orchestrator,
+    )
+    handler = JellyfinAssistIntentHandler("JellyfinAssistMusicPlaylistResume")
+    intent_obj = Intent(
+        hass,
+        {
+            "playlist_request": {"value": "My Coffee Mix"},
+            "media_player": {"value": "media_player.example_chromecast"},
+        },
+        context=context,
+    )
+
+    response = run(handler.async_handle(intent_obj))
+
+    assert response.speech["plain"]["speech"] == (
+        "Resuming playlist: playing Track 3 on Example Chromecast."
+    )
+    assert hass.services.calls[-1] == {
+        "domain": "jellyfin_assist",
+        "service": "media_orchestrator",
+        "data": {
+            "query": "My Coffee Mix",
+            "media_type": "MusicPlaylist",
+            "media_player": "media_player.example_chromecast",
+            "operation": "resume",
+        },
+        "blocking": True,
+        "return_response": True,
+        "context": context,
     }
 
 

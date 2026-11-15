@@ -14,6 +14,7 @@ from .const import (
     QUEUE_PLAYER_OPERATIONS,
     SERVICE_GET_ALBUM_TRACKS,
     SERVICE_GET_ARTIST_TRACKS,
+    SERVICE_GET_PLAYLIST_TRACKS,
     SERVICE_QUEUE_ADD,
     SERVICE_QUEUE_CLEAR,
     SERVICE_RESOLVE_MEDIA_PLAYER,
@@ -303,6 +304,138 @@ def _artist_track_item(raw: Mapping[str, Any], *, artist_name: str) -> dict[str,
         "disc_number": disc,
         "track_number": track,
     }
+
+
+def _playlist_track_item(raw: Mapping[str, Any], *, playlist_name: str) -> dict[str, Any]:
+    """Build a replayable playlist queue item from a ``get_playlist_tracks`` row.
+
+    Verbatim mirror of :func:`_album_track_item` (Q5); the only difference is
+    that a playlist track does not self-reference its container, so the
+    playlist identity is carried on the runtime (``queued_playlist_id``)
+    rather than on the item itself.
+    """
+
+    artists = raw.get("Artists")
+    track_artist = _text(artists[0]) if isinstance(artists, Sequence) and not isinstance(artists, (str, bytes)) and artists else ""
+    disc = int(raw.get("ParentIndexNumber") or 1)
+    track = int(raw.get("IndexNumber") or 0)
+    return {
+        "id": raw.get("Id"),
+        "name": raw.get("Name", ""),
+        "type": "Audio",
+        "year": raw.get("ProductionYear"),
+        "runtime_minutes": _runtime_minutes(raw) or 0,
+        "artist_name": track_artist,
+        "album_artist": raw.get("AlbumArtist") or "",
+        "album": raw.get("Album") or "",
+        "playlist_name": playlist_name,
+        "parent_index_number": disc,
+        "index_number": track,
+        "disc_number": disc,
+        "track_number": track,
+    }
+
+
+async def async_resolve_playlist_id(
+    hass: Any,
+    runtime: JellyfinAssistRuntime,
+    *,
+    query: str,
+    context: Any = None,
+) -> dict[str, Any]:
+    """Resolve a spoken playlist name to a single Jellyfin ``playlist_id``.
+
+    Dedicated path for card-4 voice phrasings.  Uses a direct
+    ``GetItems`` query with ``IncludeItemTypes=MusicPlaylist`` at the
+    user-scoped root — deliberately bypassing the catalog index so
+    ``SUPPORTED_CATALOG_MEDIA_TYPES`` and unqualified "play X"
+    resolution are left byte-for-byte unchanged (Q3).
+
+    Returns a ``_base_result``-shaped mapping.  ``success`` is True
+    only when exactly one playlist matches; ``jellyfin_id`` carries
+    the resolved playlist id.
+    """
+
+    normalized_query = _text(query)
+    if not normalized_query:
+        return _base_result(
+            success=False,
+            status="not_found",
+            operation="resolve",
+            intent="MusicPlaylist",
+            query=query,
+            message='I need a playlist name to resolve.',
+            media_type="MusicPlaylist",
+        )
+
+    try:
+        response = await runtime.client.async_get_items(
+            runtime.user_id,
+            include_item_types="MusicPlaylist",
+            search_term=normalized_query,
+            recursive=True,
+        )
+    except Exception:
+        return _base_result(
+            success=False,
+            status="api_error",
+            operation="resolve",
+            intent="MusicPlaylist",
+            query=normalized_query,
+            message="I could not search Jellyfin for that playlist.",
+            media_type="MusicPlaylist",
+        )
+
+    items = [
+        dict(item)
+        for item in response.get("Items", [])
+        if isinstance(item, Mapping)
+    ]
+    if not items:
+        return _base_result(
+            success=False,
+            status="not_found",
+            operation="resolve",
+            intent="MusicPlaylist",
+            query=normalized_query,
+            message=f'I could not find the playlist "{normalized_query}".',
+            media_type="MusicPlaylist",
+        )
+    if len(items) > 1:
+        names = ", ".join(_text(item.get("Name")) or "?" for item in items[:5])
+        return _base_result(
+            success=False,
+            status="multiple_matches",
+            operation="resolve",
+            intent="MusicPlaylist",
+            query=normalized_query,
+            message=f'I found {len(items)} playlists matching "{normalized_query}" ({names}). Please use a more specific name.',
+            items=[
+                {
+                    "id": _text(item.get("Id")),
+                    "name": _text(item.get("Name")) or "?",
+                    "type": "MusicPlaylist",
+                }
+                for item in items
+            ],
+            media_type="MusicPlaylist",
+        )
+
+    selected = items[0]
+    playlist_id = _text(selected.get("Id"))
+    playlist_name = _text(selected.get("Name")) or normalized_query
+    return _base_result(
+        success=True,
+        status="resolved",
+        operation="resolve",
+        intent="MusicPlaylist",
+        query=normalized_query,
+        message=f"Found playlist: {playlist_name}.",
+        jellyfin_id=playlist_id,
+        item={"id": playlist_id, "name": playlist_name, "type": "MusicPlaylist"},
+        items=[{"id": playlist_id, "name": playlist_name, "type": "MusicPlaylist"}],
+        media_type="MusicPlaylist",
+    )
 
 
 async def async_resolve_tv_episode(
@@ -1146,6 +1279,11 @@ async def async_media_orchestrator(
 ) -> dict[str, Any]:
     """Resolve a media request, manage the queue, and play or add its plan."""
 
+    # This is not a playlist play/resume: clear the playlist queue origin so
+    # the completion hook (card 2) stays a silent no-op for the album and
+    # native-queue paths that follow.
+    runtime.queued_playlist_id = None
+
     timer = _StageTimer()
     requested_operation = _text(operation).lower() or "play"
     requested_player = _text(media_player)
@@ -1203,6 +1341,50 @@ async def async_media_orchestrator(
     resolved_year = _optional_int(resolution.get("year")) or _optional_int(year)
     resolved_season = _optional_int(resolution.get("season")) or _optional_int(season)
     resolved_episode = _optional_int(resolution.get("episode")) or _optional_int(episode)
+
+    # --- Dedicated playlist branch (card 4) --------------------------------------
+    # "play the playlist X" / "resume the playlist X" resolve via the
+    # dedicated name→id helper (async_resolve_playlist_id) and delegate to
+    # the card-3 async_play_playlist / async_resume_playlist flows.
+    # Keyed on media_type == "MusicPlaylist" — only ever set by the two
+    # dedicated playlist intents; unqualified "play X" (catalog index) is
+    # completely unaffected (Q3).
+    if resolved_media_type == "MusicPlaylist":
+        playlist_resolution = await async_resolve_playlist_id(
+            hass,
+            runtime,
+            query=resolved_query,
+            context=context,
+        )
+        if not playlist_resolution.get("success", False):
+            playlist_resolution.setdefault("operation", requested_operation)
+            playlist_resolution.setdefault("media_player", resolved_player)
+            return playlist_resolution
+        playlist_id = _text(playlist_resolution.get("jellyfin_id"))
+        if not playlist_id:
+            return _base_result(
+                success=False,
+                status="playlist_not_found",
+                operation=requested_operation,
+                intent="MusicPlaylist",
+                query=resolved_query,
+                message=f'I could not find the playlist "{resolved_query}".',
+                media_player=resolved_player,
+            )
+        if requested_operation == "resume":
+            return await async_resume_playlist(
+                hass,
+                runtime,
+                playlist_id=playlist_id,
+                media_player=resolved_player,
+            )
+        return await async_play_playlist(
+            hass,
+            runtime,
+            playlist_id=playlist_id,
+            media_player=resolved_player,
+        )
+    # --- end dedicated playlist branch -------------------------------------------
 
     # "Resume" re-uses the existing album search/resolution pipeline (D4/D6):
     # resolve the requested album to a Jellyfin id, then delegate to the
@@ -1544,6 +1726,11 @@ async def async_play_pending_media(
     context: Any = None,
 ) -> dict[str, Any]:
     """Resume one pending multiple-match request by selection number."""
+
+    # Not a playlist play/resume; clear the origin (any container the
+    # selection resolves to re-enters ``async_media_orchestrator``, which
+    # clears it again).
+    runtime.queued_playlist_id = None
 
     pending = runtime.pending_selection if isinstance(runtime.pending_selection, Mapping) else {}
     pending_items_raw = pending.get("items", []) if isinstance(pending, Mapping) else []
@@ -1890,6 +2077,10 @@ async def async_resume_album(
 ) -> dict[str, Any]:
     """Resume a partially completed album from the first unplayed track."""
 
+    # Not a playlist play/resume; clear the origin so the Q6 repeat-wrap
+    # reset and the playlist completion hook do not touch the playlist store.
+    runtime.queued_playlist_id = None
+
     album_store = runtime.album_tracking_store
     user_id = runtime.user_id
 
@@ -2071,13 +2262,385 @@ async def async_resume_album(
     )
 
 
+async def async_play_playlist(
+    hass: Any,
+    runtime: JellyfinAssistRuntime,
+    *,
+    playlist_id: str,
+    media_player: str,
+    context: Any = None,
+) -> dict[str, Any]:
+    """Play a full, ordered playlist queue and reset its tracking store (D3).
+
+    Verbatim mirror of the album play tail: fetch the playlist's tracks via
+    ``get_playlist_tracks`` (card 1), reset the playlist tracking store for
+    this ``(user_id, playlist_id)`` (D3), build the full ordered queue, then
+    play the first track at 0:00. The playlist queue origin is carried on the
+    runtime as ``queued_playlist_id`` so the completion hook (card 2) marks
+    playlist tracks complete; the album/native-queue path is unaffected.
+    """
+
+    playlist_store = runtime.playlist_tracking_store
+    user_id = runtime.user_id
+
+    # Fetch the full playlist track plan.
+    response = await _action(
+        hass,
+        runtime,
+        SERVICE_GET_PLAYLIST_TRACKS,
+        {"playlist_id": playlist_id},
+        context=context,
+    )
+    status = int(response.get("status", 0) or 0)
+    playlist_items = _raw_items(response)
+    if status != 200:
+        return _base_result(
+            success=False,
+            status="playlist_lookup_failed",
+            operation="play_playlist",
+            intent="MusicPlaylist",
+            query=None,
+            message="I could not retrieve the playlist tracks from Jellyfin.",
+            jellyfin_id=playlist_id,
+            media_player=media_player,
+            http_status=status,
+        )
+    if not playlist_items:
+        return _base_result(
+            success=False,
+            status="playlist_empty",
+            operation="play_playlist",
+            intent="MusicPlaylist",
+            query=None,
+            message="That playlist has no playable tracks in Jellyfin.",
+            jellyfin_id=playlist_id,
+            media_player=media_player,
+        )
+
+    # Reset playlist tracking before building the full-track queue (D3).
+    # Playing a playlist always starts from the beginning.
+    playlist_name = _text(playlist_items[0].get("Name")) or "Playlist"
+    if playlist_store is not None and user_id:
+        try:
+            await playlist_store.reset_playlist(user_id, playlist_id)
+        except Exception:
+            _LOGGER.debug(
+                "Playlist tracking: reset_playlist failed for %s; continuing",
+                playlist_id,
+                exc_info=True,
+            )
+
+    plan = [_playlist_track_item(raw, playlist_name=playlist_name) for raw in playlist_items]
+
+    # Enact the play tail: prepare session, clear queue, add all tracks,
+    # play the first track at 0:00 (no start_position_ticks).
+    session = await async_prepare_play_session(hass, runtime, media_player=media_player)
+    if not session.get("success", False):
+        return _base_result(
+            success=False,
+            status="repeat_reset_failed",
+            operation="play_playlist",
+            intent="MusicPlaylist",
+            query=None,
+            message=f"I could not reset the repeat settings for {_state_friendly_name(hass, media_player)}.",
+            jellyfin_id=playlist_id,
+            media_player=media_player,
+            repeat_reset_response=session,
+        )
+
+    clear_response = await _action(
+        hass,
+        runtime,
+        SERVICE_QUEUE_CLEAR,
+        {"media_player": media_player},
+        context=context,
+    )
+    if int(clear_response.get("status", 0) or 0) != 200:
+        return _base_result(
+            success=False,
+            status="queue_clear_failed",
+            operation="play_playlist",
+            intent="MusicPlaylist",
+            query=None,
+            message="I could not clear the media queue.",
+            jellyfin_id=playlist_id,
+            media_player=media_player,
+            queue_response=clear_response,
+        )
+
+    last_queue_response: dict[str, Any] = clear_response
+    for item in plan:
+        item_type = _text(item.get("type"))
+        queue_response = await _action(
+            hass,
+            runtime,
+            SERVICE_QUEUE_ADD,
+            {
+                "media_player": media_player,
+                "id": _text(item.get("id")),
+                "name": _text(item.get("name")),
+                "type": item_type,
+                "artist": _text(item.get("artist_name")) or _text(item.get("album_artist")),
+                "album": _text(item.get("album")),
+                "series": "",
+                "season": "",
+                "episode": "",
+            },
+            context=context,
+        )
+        last_queue_response = queue_response
+        if int(queue_response.get("status", 0) or 0) != 200:
+            return _base_result(
+                success=False,
+                status="queue_add_failed",
+                operation="play_playlist",
+                intent="MusicPlaylist",
+                query=None,
+                message=f"I could not add {_text(item.get('name')) or 'a track'} to the media queue.",
+                jellyfin_id=item.get("id"),
+                item=item,
+                media_player=media_player,
+                queue_response=queue_response,
+            )
+
+    first_item = plan[0]
+    # Carry the playlist queue origin; the completion hook (card 2) marks
+    # playlist tracks complete only while this is set.
+    runtime.queued_playlist_id = playlist_id
+    playback = await async_play_item(
+        hass,
+        runtime,
+        item=first_item,
+        media_player=media_player,
+    )
+    success = bool(playback.get("success", False))
+    description = _clean_message(_pending_direct_description(first_item))
+    message = (
+        f"Playing playlist: {description} on {_state_friendly_name(hass, media_player)}."
+        if success
+        else f"Queued {len(plan)} track{'s' if len(plan) != 1 else ''}, but playback failed."
+    )
+    return _base_result(
+        success=success,
+        status="playing" if success else "playback_failed",
+        operation="play_playlist",
+        intent="MusicPlaylist",
+        query=None,
+        message=message,
+        jellyfin_id=first_item.get("id"),
+        item=first_item,
+        playback_plan=plan,
+        media_player=media_player,
+        total_tracks=len(plan),
+        queue_response=last_queue_response,
+        playback_response=playback,
+    )
+
+
+async def async_resume_playlist(
+    hass: Any,
+    runtime: JellyfinAssistRuntime,
+    *,
+    playlist_id: str,
+    media_player: str,
+    context: Any = None,
+) -> dict[str, Any]:
+    """Resume a partially completed playlist from the first unplayed track.
+
+    Verbatim mirror of :func:`async_resume_album`: fetch the full playlist
+    track plan, drop the tracks already recorded as complete in the playlist
+    tracking store, then play the first remaining track at 0:00 — a filtered
+    queue, not a seek. The store is intentionally NOT reset here: resuming
+    must preserve the completed tracks, not clear them.
+    """
+
+    playlist_store = runtime.playlist_tracking_store
+    user_id = runtime.user_id
+
+    # Fetch the full playlist track plan.
+    response = await _action(
+        hass,
+        runtime,
+        SERVICE_GET_PLAYLIST_TRACKS,
+        {"playlist_id": playlist_id},
+        context=context,
+    )
+    status = int(response.get("status", 0) or 0)
+    playlist_items = _raw_items(response)
+    if status != 200:
+        return _base_result(
+            success=False,
+            status="playlist_lookup_failed",
+            operation="resume_playlist",
+            intent="MusicPlaylist",
+            query=None,
+            message="I could not retrieve the playlist tracks from Jellyfin.",
+            jellyfin_id=playlist_id,
+            media_player=media_player,
+            http_status=status,
+        )
+    if not playlist_items:
+        return _base_result(
+            success=False,
+            status="playlist_empty",
+            operation="resume_playlist",
+            intent="MusicPlaylist",
+            query=None,
+            message="That playlist has no playable tracks in Jellyfin.",
+            jellyfin_id=playlist_id,
+            media_player=media_player,
+        )
+
+    # Determine completed track IDs from the playlist tracking store.
+    completed_ids: frozenset[str] = frozenset()
+    if playlist_store is not None and user_id:
+        try:
+            completed_ids = playlist_store.completed_ids(user_id, playlist_id)
+        except Exception:
+            _LOGGER.debug(
+                "Playlist tracking: completed_ids failed for %s; continuing",
+                playlist_id,
+                exc_info=True,
+            )
+
+    # Build the full plan, then filter out already-completed tracks.
+    playlist_name = _text(playlist_items[0].get("Name")) or "Playlist"
+    full_plan = [_playlist_track_item(raw, playlist_name=playlist_name) for raw in playlist_items]
+    plan = [
+        item for item in full_plan
+        if _text(item.get("id")) not in completed_ids
+    ]
+
+    if not plan:
+        return _base_result(
+            success=False,
+            status="playlist_complete",
+            operation="resume_playlist",
+            intent="MusicPlaylist",
+            query=None,
+            message="All tracks in this playlist are already complete.",
+            jellyfin_id=playlist_id,
+            media_player=media_player,
+            total_tracks=len(full_plan),
+            completed_tracks=len(completed_ids),
+        )
+
+    # Enact the play tail: prepare session, clear queue, add remaining tracks,
+    # play the first remaining track at 0:00 (no start_position_ticks).
+    session = await async_prepare_play_session(hass, runtime, media_player=media_player)
+    if not session.get("success", False):
+        return _base_result(
+            success=False,
+            status="repeat_reset_failed",
+            operation="resume_playlist",
+            intent="MusicPlaylist",
+            query=None,
+            message=f"I could not reset the repeat settings for {_state_friendly_name(hass, media_player)}.",
+            jellyfin_id=playlist_id,
+            media_player=media_player,
+            repeat_reset_response=session,
+        )
+
+    clear_response = await _action(
+        hass,
+        runtime,
+        SERVICE_QUEUE_CLEAR,
+        {"media_player": media_player},
+        context=context,
+    )
+    if int(clear_response.get("status", 0) or 0) != 200:
+        return _base_result(
+            success=False,
+            status="queue_clear_failed",
+            operation="resume_playlist",
+            intent="MusicPlaylist",
+            query=None,
+            message="I could not clear the media queue.",
+            jellyfin_id=playlist_id,
+            media_player=media_player,
+            queue_response=clear_response,
+        )
+
+    last_queue_response: dict[str, Any] = clear_response
+    for item in plan:
+        item_type = _text(item.get("type"))
+        queue_response = await _action(
+            hass,
+            runtime,
+            SERVICE_QUEUE_ADD,
+            {
+                "media_player": media_player,
+                "id": _text(item.get("id")),
+                "name": _text(item.get("name")),
+                "type": item_type,
+                "artist": _text(item.get("artist_name")) or _text(item.get("album_artist")),
+                "album": _text(item.get("album")),
+                "series": "",
+                "season": "",
+                "episode": "",
+            },
+            context=context,
+        )
+        last_queue_response = queue_response
+        if int(queue_response.get("status", 0) or 0) != 200:
+            return _base_result(
+                success=False,
+                status="queue_add_failed",
+                operation="resume_playlist",
+                intent="MusicPlaylist",
+                query=None,
+                message=f"I could not add {_text(item.get('name')) or 'a track'} to the media queue.",
+                jellyfin_id=item.get("id"),
+                item=item,
+                media_player=media_player,
+                queue_response=queue_response,
+            )
+
+    first_item = plan[0]
+    # Carry the playlist queue origin; the completion hook (card 2) marks
+    # playlist tracks complete only while this is set.
+    runtime.queued_playlist_id = playlist_id
+    playback = await async_play_item(
+        hass,
+        runtime,
+        item=first_item,
+        media_player=media_player,
+    )
+    success = bool(playback.get("success", False))
+    description = _clean_message(_pending_direct_description(first_item))
+    message = (
+        f"Resuming playlist: playing {description} on {_state_friendly_name(hass, media_player)}."
+        if success
+        else f"Queued {len(plan)} remaining track{'s' if len(plan) != 1 else ''}, but playback failed."
+    )
+    return _base_result(
+        success=success,
+        status="playing" if success else "playback_failed",
+        operation="resume_playlist",
+        intent="MusicPlaylist",
+        query=None,
+        message=message,
+        jellyfin_id=first_item.get("id"),
+        item=first_item,
+        playback_plan=plan,
+        media_player=media_player,
+        total_tracks=len(full_plan),
+        completed_tracks=len(completed_ids),
+        remaining_tracks=len(plan),
+        queue_response=last_queue_response,
+        playback_response=playback,
+    )
+
+
 __all__ = [
     "async_media_orchestrator",
     "async_play_pending_media",
+    "async_play_playlist",
     "async_resolve_episode_title",
     "async_resolve_media_intent",
     "async_resolve_tv_episode",
     "async_resume_album",
     "async_resume_pending_media_request",
+    "async_resume_playlist",
     "normalize_jellyfin_item",
 ]

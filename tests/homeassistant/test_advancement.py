@@ -1511,3 +1511,201 @@ def test_non_album_audio_not_marked(tmp_path: Path, monkeypatch: Any) -> None:
     )
 
     assert "abc123" not in store.completed_ids("user123", "album456")
+
+
+# ---------------------------------------------------------------------------
+# Q6: repeat_queue wrap-around resets playlist tracking
+# ---------------------------------------------------------------------------
+
+def _playlist_store(completed: set[str] | None = None):
+    from custom_components.jellyfin_assist.playlist_tracking_store import (
+        PlaylistTrackingStore,
+    )
+
+    class _FakeBackend:
+        def __init__(self) -> None:
+            self.data: dict[str, Any] = {
+                "schema_version": 1,
+                "playlists": {},
+            }
+            if completed:
+                self.data["playlists"] = {
+                    "playlist123": {"user123": {"completed_song_ids": list(completed), "updated_at": 1.0}},
+                }
+
+        async def async_load(self) -> dict[str, Any] | None:
+            return self.data
+
+        async def async_save(self, data: Mapping[str, Any]) -> None:
+            self.data = dict(data)
+
+    backend = _FakeBackend()
+    store = PlaylistTrackingStore(backend, storage_key="jma.playlist-tracking.test")
+    return backend, store
+
+
+def _playlist_client(item: dict[str, Any]):
+    """A client that resolves an audio item with NO AlbumId → album path is a no-op.
+
+    This keeps the album flow byte-for-byte unchanged (album store absent +
+    no AlbumId), isolating the Q6 playlist reset behaviour.
+    """
+
+    class _Client:
+        async def async_get_item(self, user_id: str, item_id: str) -> dict[str, Any]:
+            if item_id == "abc123":
+                return dict(item)
+            raise AssertionError(f"unexpected item lookup: {item_id}")
+
+        async def async_get_items(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            return {"Items": []}
+
+        async def async_post_playing_items(self, **_: Any) -> None:
+            raise AssertionError("not used")
+
+    return _Client()
+
+
+def test_playlist_wrap_resets_tracking_on_repeat_queue(tmp_path: Path, monkeypatch: Any) -> None:
+    """Q6: a confirmed completion at a repeat_queue wrap resets the playlist store."""
+
+    class QueueClient:
+        async def async_get(self, player: str) -> dict[str, Any]:
+            return {
+                "status": 200,
+                "content": {"success": True, "current": {"id": "abc123", "name": "Song"}, "repeat_queue": True},
+                "headers": {},
+            }
+
+        async def async_next(self, player: str) -> dict[str, Any]:
+            return {
+                "status": 200,
+                "content": {"success": True, "current": None, "upcoming_count": 0},
+                "headers": {},
+            }
+
+    monkeypatch.setattr(
+        "custom_components.jellyfin_assist.advancement.async_play_item",
+        _noop_play,
+    )
+    _backend, pstore = _playlist_store(completed={"abc123"})
+    # A playlist queue is loaded: this is the playlist flow, not an album.
+    rt = runtime(QueueClient())
+    rt.user_id = "user123"
+    rt.album_tracking_store = None
+    rt.client = _playlist_client({"Id": "abc123", "Type": "Audio"})
+    rt.queued_playlist_id = "playlist123"
+    rt.playlist_tracking_store = pstore
+    hass = FakeHass(tmp_path)
+
+    old_state, new_state = media_states(position=95, duration=100)
+
+    run(
+        _async_process_completion(
+            hass,
+            rt,
+            player="media_player.example",
+            old_state=old_state,
+            new_state=new_state,
+        )
+    )
+
+    # The completion marked the track, then the repeat-wrap reset cleared it,
+    # so the store is back to empty for the second pass.
+    assert pstore.completed_ids("user123", "playlist123") == frozenset()
+
+
+def test_playlist_no_reset_without_repeat_queue(tmp_path: Path, monkeypatch: Any) -> None:
+    """Q6: without repeat_queue, a confirmed completion does NOT reset the store."""
+
+    class QueueClient:
+        async def async_get(self, player: str) -> dict[str, Any]:
+            return {
+                "status": 200,
+                "content": {"success": True, "current": {"id": "abc123", "name": "Song"}, "repeat_queue": False},
+                "headers": {},
+            }
+
+        async def async_next(self, player: str) -> dict[str, Any]:
+            return {
+                "status": 200,
+                "content": {"success": True, "current": None, "upcoming_count": 0},
+                "headers": {},
+            }
+
+    monkeypatch.setattr(
+        "custom_components.jellyfin_assist.advancement.async_play_item",
+        _noop_play,
+    )
+    _backend, pstore = _playlist_store()
+    rt = runtime(QueueClient())
+    rt.user_id = "user123"
+    rt.album_tracking_store = None
+    rt.client = _playlist_client({"Id": "abc123", "Type": "Audio"})
+    rt.queued_playlist_id = "playlist123"
+    rt.playlist_tracking_store = pstore
+    hass = FakeHass(tmp_path)
+
+    old_state, new_state = media_states(position=95, duration=100)
+
+    run(
+        _async_process_completion(
+            hass,
+            rt,
+            player="media_player.example",
+            old_state=old_state,
+            new_state=new_state,
+        )
+    )
+
+    # The confirmed completion marks the track; no wrap reset, so it stays.
+    assert "abc123" in pstore.completed_ids("user123", "playlist123")
+
+
+def test_playlist_no_reset_when_no_playlist_queued(tmp_path: Path, monkeypatch: Any) -> None:
+    """Q6: the album/native-queue path (no queued playlist) never resets the store."""
+
+    class QueueClient:
+        async def async_get(self, player: str) -> dict[str, Any]:
+            return {
+                "status": 200,
+                "content": {"success": True, "current": {"id": "abc123", "name": "Song"}, "repeat_queue": True},
+                "headers": {},
+            }
+
+        async def async_next(self, player: str) -> dict[str, Any]:
+            return {
+                "status": 200,
+                "content": {"success": True, "current": None, "upcoming_count": 0},
+                "headers": {},
+            }
+
+    monkeypatch.setattr(
+        "custom_components.jellyfin_assist.advancement.async_play_item",
+        _noop_play,
+    )
+    _backend, pstore = _playlist_store()
+    rt = runtime(QueueClient())
+    rt.user_id = "user123"
+    rt.album_tracking_store = None
+    rt.client = _playlist_client({"Id": "abc123", "Type": "Audio"})
+    # No playlist queued → the Q6 reset branch is inert (album/native path).
+    rt.queued_playlist_id = None
+    rt.playlist_tracking_store = pstore
+    hass = FakeHass(tmp_path)
+
+    old_state, new_state = media_states(position=95, duration=100)
+
+    run(
+        _async_process_completion(
+            hass,
+            rt,
+            player="media_player.example",
+            old_state=old_state,
+            new_state=new_state,
+        )
+    )
+
+    # With no queued playlist, the mark never fires either (the hook is a
+    # silent no-op), so the store stays empty and untouched.
+    assert pstore.completed_ids("user123", "playlist123") == frozenset()

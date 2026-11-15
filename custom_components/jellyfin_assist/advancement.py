@@ -254,6 +254,65 @@ async def _async_mark_album_completion(
         return
 
 
+async def _async_mark_playlist_completion(
+    runtime: Any,
+    completed_item_id: str,
+) -> None:
+    """Mark a completed song in the playlist tracking store (if applicable).
+
+    Mirror of ``_async_mark_album_completion`` for the playlist flow
+    (plan decision Q5). Unlike an album, a track does not self-reference
+    its playlists (a track is a member of every playlist that contains
+    it), so there is no item field to resolve the container from. The
+    playlist queue origin is instead remembered on the runtime: the
+    play/resume playlist wiring (card 3) sets ``queued_playlist_id`` to
+    the playlist id whose tracks are currently loaded in the queue.
+
+    Only marks when a playlist is queued (``queued_playlist_id`` present)
+    and the completed item is audio. When no playlist is queued, this is a
+    silent no-op, so the album/native-queue path is byte-for-byte unchanged
+    and the skip / ``completion_rejected`` path (which never reaches this
+    call) leaves the playlist store untouched.
+    Failures are best-effort and never raise into the advancement path.
+    """
+
+    store = getattr(runtime, "playlist_tracking_store", None)
+    client = runtime.client
+    user_id = runtime.user_id
+    playlist_id = getattr(runtime, "queued_playlist_id", None)
+
+    if store is None or client is None or not user_id or not playlist_id:
+        return
+
+    if not completed_item_id:
+        return
+
+    try:
+        item_response = await client.async_get_item(user_id, completed_item_id)
+    except Exception:
+        _LOGGER.debug(
+            "Playlist tracking: could not resolve item %s; skipping",
+            completed_item_id,
+            exc_info=True,
+        )
+        return
+
+    item_type = item_response.get("Type", "")
+    if item_type not in {"Audio", "MusicVideo"}:
+        return
+
+    try:
+        await store.mark_complete(user_id, playlist_id, completed_item_id)
+    except Exception:
+        _LOGGER.debug(
+            "Playlist tracking: mark_complete failed for %s in playlist %s; skipping",
+            completed_item_id,
+            playlist_id,
+            exc_info=True,
+        )
+        return
+
+
 async def _async_handle_album_completion(
     hass: HomeAssistant,
     runtime: JellyfinAssistRuntime,
@@ -643,6 +702,7 @@ async def _async_process_completion(
         runtime.playback_sessions.pop(player, None)
 
     await _async_mark_album_completion(runtime, current_id)
+    await _async_mark_playlist_completion(runtime, current_id)
 
     # Album completion check: if every track in the album has been marked
     # complete, announce and either stop (no repeat) or reset tracking
@@ -650,6 +710,28 @@ async def _async_process_completion(
     # so ``async_next`` below will advance to track 1 and the caller will
     # play it).
     repeat_queue = bool(queue_body.get("repeat_queue", False))
+
+    # Q6: repeat-queue wrap-around resets playlist tracking so the second
+    # pass (the queue store has already wrapped the index back to the
+    # first track) re-marks completions. Mirrors the album repeat path:
+    # reset, then let ``async_next`` advance into the wrapped queue and
+    # the caller play the first track. Only active while a playlist queue
+    # is loaded (``queued_playlist_id`` present), so the album/native
+    # path is byte-for-byte unchanged.
+    queued_playlist_id = getattr(runtime, "queued_playlist_id", None)
+    playlist_store = getattr(runtime, "playlist_tracking_store", None)
+    if playlist_store is not None and runtime.user_id and queued_playlist_id and repeat_queue:
+        try:
+            await playlist_store.reset_playlist(
+                runtime.user_id, queued_playlist_id
+            )
+        except Exception:
+            _LOGGER.debug(
+                "Playlist tracking: reset_playlist (wrap) failed for %s; continuing",
+                queued_playlist_id,
+                exc_info=True,
+            )
+
     album_result = await _async_handle_album_completion(
         hass,
         runtime,
