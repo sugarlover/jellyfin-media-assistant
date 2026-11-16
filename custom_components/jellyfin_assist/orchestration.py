@@ -31,7 +31,7 @@ from .runtime import JellyfinAssistRuntime
 from .series_selection import select_generic_series_episodes
 
 _PLAYABLE_ITEM_TYPES = frozenset({"Movie", "Episode", "Audio", "MusicVideo", "Video"})
-_CONTAINER_ITEM_TYPES = frozenset({"series", "musicalbum", "musicartist", "musicplaylist"})
+_CONTAINER_ITEM_TYPES = frozenset({"series", "musicalbum", "musicartist", "musicplaylist", "playlist"})
 _WHITESPACE_RE = re.compile(r"\s+")
 _NORMALIZE_KEY_RE = re.compile(r"[^a-z0-9]+")
 
@@ -389,7 +389,7 @@ async def async_resolve_playlist_id(
     items = [
         dict(item)
         for item in response.get("Items", [])
-        if isinstance(item, Mapping)
+        if isinstance(item, Mapping) and _text(item.get("Type")) == "Playlist"
     ]
     if not items:
         return _base_result(
@@ -1835,7 +1835,7 @@ async def async_play_pending_media(
             query=selected_name,
             media_player=pending_player,
             operation=pending_operation,
-            media_type=selected_type,
+            media_type=pending_intent or selected_type,
             artist=(
                 _text(item.get("artist_name")) or _text(item.get("album_artist"))
                 if selected_type_key == "musicalbum"

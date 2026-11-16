@@ -520,7 +520,7 @@ async def _async_write_session_position(
             device_id=player,
             _async_auth_refresh=runtime.async_trigger_reauth,
         )
-    except (OSError, JellyfinApiError, asyncio.TimeoutError) as exc:
+    except (OSError, RuntimeError, JellyfinApiError, asyncio.TimeoutError) as exc:
         _LOGGER.debug(
             "Progress failed: player=%s item=%s user=%s ticks=%s error=%s",
             player, item_id, runtime.user_id, ticks, exc,

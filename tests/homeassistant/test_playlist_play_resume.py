@@ -35,6 +35,7 @@ from custom_components.jellyfin_assist.orchestration import (
     async_media_orchestrator,
     async_play_pending_media,
     async_play_playlist,
+    async_resolve_playlist_id,
     async_resume_playlist,
 )
 from custom_components.jellyfin_assist.runtime import JellyfinAssistRuntime
@@ -495,8 +496,8 @@ class TestPlaylistMultiMatchPendingSelection:
         runtime = _make_runtime()
         hass = _make_fake_hass()
         playlists = [
-            {"Id": "pl-1", "Name": "Kids Favorites", "Type": "MusicPlaylist"},
-            {"Id": "pl-2", "Name": "Kids Bedtime", "Type": "MusicPlaylist"},
+            {"Id": "pl-1", "Name": "Kids Favorites", "Type": "Playlist"},
+            {"Id": "pl-2", "Name": "Kids Bedtime", "Type": "Playlist"},
         ]
         runtime.client.async_get_items = AsyncMock(return_value={"Items": playlists})
 
@@ -528,8 +529,8 @@ class TestPlaylistMultiMatchPendingSelection:
         runtime = _make_runtime(playlist_tracking_store=_FakePlaylistStore(completed=set()))
         hass = _make_fake_hass()
         playlists = [
-            {"Id": "pl-1", "Name": "Kids Favorites", "Type": "MusicPlaylist"},
-            {"Id": "pl-2", "Name": "Kids Bedtime", "Type": "MusicPlaylist"},
+            {"Id": "pl-1", "Name": "Kids Favorites", "Type": "Playlist"},
+            {"Id": "pl-2", "Name": "Kids Bedtime", "Type": "Playlist"},
         ]
 
         async def fake_get_items(user_id: str, **kwargs: Any) -> dict[str, Any]:
@@ -538,8 +539,9 @@ class TestPlaylistMultiMatchPendingSelection:
             return {"Items": playlists}
 
         runtime.client.async_get_items = AsyncMock(side_effect=fake_get_items)
+        # Real live shape: Type == "Playlist" (not the fake "MusicPlaylist").
         runtime.client.async_get_item = AsyncMock(
-            return_value={"Id": "pl-1", "Name": "Kids Favorites", "Type": "MusicPlaylist"}
+            return_value={"Id": "pl-1", "Name": "Kids Favorites", "Type": "Playlist"}
         )
 
         tracks = [
@@ -592,3 +594,221 @@ class TestPlaylistMultiMatchPendingSelection:
         assert result["intent"] == "MusicPlaylist"
         # Successful resolution clears the pending selection.
         assert runtime.pending_selection is None
+
+
+# ---------------------------------------------------------------------------
+# Bug C (D1): playlist search response is client-side filtered to Playlist
+# items only — mixed-type search results (Genre/Audio/Video) are dropped.
+# ---------------------------------------------------------------------------
+
+class TestPlaylistResolveFiltersMixedTypes:
+    """async_resolve_playlist_id keeps only live Type=='Playlist' items."""
+
+    def test_mixed_type_search_returns_playlist_only(self) -> None:
+        runtime = _make_runtime()
+        hass = _make_fake_hass()
+        mixed = [
+            {"Id": "pl-1", "Name": "Kids", "Type": "Playlist"},
+            {"Id": "g-1", "Name": "Kids", "Type": "Genre"},
+            {"Id": "a-1", "Name": "Kids", "Type": "Audio"},
+            {"Id": "v-1", "Name": "Kids", "Type": "Video"},
+        ]
+        runtime.client.async_get_items = AsyncMock(return_value={"Items": mixed})
+
+        result = run(async_resolve_playlist_id(
+            hass,
+            runtime,
+            query="kids",
+        ))
+
+        assert result["success"] is True
+        assert result["status"] == "resolved"
+        assert result["jellyfin_id"] == "pl-1"
+        # Only the Playlist survives; a single match resolves directly.
+        assert len(result["items"]) == 1
+        assert result["items"][0]["id"] == "pl-1"
+        # The include_item_types parameter is kept for the server query.
+        call_kwargs = runtime.client.async_get_items.call_args.kwargs
+        assert call_kwargs["include_item_types"] == "MusicPlaylist"
+
+    def test_multiple_playlist_matches_list_only_playlists(self) -> None:
+        runtime = _make_runtime()
+        hass = _make_fake_hass()
+        mixed = [
+            {"Id": "pl-1", "Name": "Kids Favorites", "Type": "Playlist"},
+            {"Id": "g-1", "Name": "Kids", "Type": "Genre"},
+            {"Id": "a-1", "Name": "Kids", "Type": "Audio"},
+            {"Id": "pl-2", "Name": "Kids Bedtime", "Type": "Playlist"},
+            {"Id": "v-1", "Name": "Kids", "Type": "Video"},
+        ]
+        runtime.client.async_get_items = AsyncMock(return_value={"Items": mixed})
+
+        result = run(async_resolve_playlist_id(
+            hass,
+            runtime,
+            query="kids",
+        ))
+
+        assert result["success"] is False
+        assert result["status"] == "multiple_matches"
+        # The spoken message lists only the two playlists.
+        assert "Kids Favorites" in result["message"]
+        assert "Kids Bedtime" in result["message"]
+        assert "Genre" not in result["message"]
+        assert "Video" not in result["message"]
+        # Pending items carry only playlists (ids pl-1, pl-2).
+        pending_ids = [item["id"] for item in result["items"]]
+        assert pending_ids == ["pl-1", "pl-2"]
+        assert all(item["type"] == "MusicPlaylist" for item in result["items"])
+        # Downstream hard-coded type string is preserved for the pending items.
+
+
+# ---------------------------------------------------------------------------
+# Bug A (D2): live Type=='Playlist' is a container item, so a pending
+# playlist selection re-enters the orchestrator and plays via
+# async_play_playlist.
+# ---------------------------------------------------------------------------
+
+
+class TestPlaylistPendingSelectionRealShape:
+    """A live-shape (Type=='Playlist') pending selection plays via
+    async_play_playlist, not 'cannot be queued directly'."""
+
+    def test_pending_playlist_selection_plays_via_play_playlist(self) -> None:
+        runtime = _make_runtime(playlist_tracking_store=_FakePlaylistStore(completed=set()))
+        hass = _make_fake_hass()
+        playlists = [
+            {"Id": "pl-1", "Name": "Kids Favorites", "Type": "Playlist"},
+            {"Id": "pl-2", "Name": "Kids Bedtime", "Type": "Playlist"},
+        ]
+
+        async def fake_get_items(user_id: str, **kwargs: Any) -> dict[str, Any]:
+            if kwargs.get("search_term") == "Kids Favorites":
+                return {"Items": [playlists[0]]}
+            return {"Items": playlists}
+
+        runtime.client.async_get_items = AsyncMock(side_effect=fake_get_items)
+        # Real live shape: Type == "Playlist" (not the fake "MusicPlaylist").
+        runtime.client.async_get_item = AsyncMock(
+            return_value={"Id": "pl-1", "Name": "Kids Favorites", "Type": "Playlist"}
+        )
+
+        tracks = [
+            _make_raw_track("t1", "Track 1", 1),
+            _make_raw_track("t2", "Track 2", 2),
+        ]
+
+        async def _resolve_tracks(h, r, s, d, *, c=None, **kw):
+            return await _resolve_and_playlist_action(h, r, s, d, context=c, tracks=tracks)
+
+        with patch(
+            "custom_components.jellyfin_assist.orchestration._action",
+            new=_resolve_tracks,
+        ), patch(
+            "custom_components.jellyfin_assist.orchestration.async_prepare_play_session",
+            new=AsyncMock(return_value={"success": True}),
+        ), patch(
+            "custom_components.jellyfin_assist.orchestration.async_play_item",
+            new=AsyncMock(return_value={"success": True}),
+        ) as play_item:
+            first = run(async_media_orchestrator(
+                hass,
+                runtime,
+                query="kids",
+                media_player=_PLAYER,
+                media_type="MusicPlaylist",
+                operation="play",
+            ))
+        assert first["success"] is False
+        assert isinstance(runtime.pending_selection, dict)
+        assert runtime.pending_selection is not None
+
+        with patch(
+            "custom_components.jellyfin_assist.orchestration._action",
+            new=_resolve_tracks,
+        ), patch(
+            "custom_components.jellyfin_assist.orchestration.async_prepare_play_session",
+            new=AsyncMock(return_value={"success": True}),
+        ), patch(
+            "custom_components.jellyfin_assist.orchestration.async_play_item",
+            new=play_item,
+        ):
+            result = run(async_play_pending_media(hass, runtime, selection=1))
+
+        assert result["success"] is True
+        # The live-shape playlist selection re-entered the orchestrator as a
+        # MusicPlaylist and delegated to async_play_playlist: the first
+        # track is queued/played (not "cannot be queued directly").
+        assert result["jellyfin_id"] == "t1"
+        assert result["status"] == "playing"
+        assert result["intent"] == "MusicPlaylist"
+        # Successful resolution clears the pending selection.
+        assert runtime.pending_selection is None
+
+
+# ---------------------------------------------------------------------------
+# D1 acceptance: an exact single Playlist match resolves directly with no
+# "Please select a number." prompt.
+# ---------------------------------------------------------------------------
+
+
+class TestPlaylistExactSingleMatchNoPrompt:
+    """One surviving Type=='Playlist' item for "Kids" resolves directly."""
+
+    def test_single_playlist_match_resolves_without_prompt(self) -> None:
+        runtime = _make_runtime()
+        hass = _make_fake_hass()
+        mixed = [
+            {"Id": "pl-kids", "Name": "Kids", "Type": "Playlist"},
+            {"Id": "g-1", "Name": "Kids", "Type": "Genre"},
+            {"Id": "a-1", "Name": "Kids", "Type": "Audio"},
+            {"Id": "v-1", "Name": "Kids", "Type": "Video"},
+        ]
+        runtime.client.async_get_items = AsyncMock(return_value={"Items": mixed})
+
+        result = run(async_resolve_playlist_id(
+            hass,
+            runtime,
+            query="Kids",
+        ))
+
+        assert result["success"] is True
+        assert result["status"] == "resolved"
+        assert result["jellyfin_id"] == "pl-kids"
+        # No selection prompt: the message does not ask to pick a number.
+        assert "Please use a more specific name" not in result["message"]
+        assert "select" not in result["message"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Bug B (D3): a RuntimeError("Session is closed") from
+# async_post_playing_items must not escape _async_write_session_position.
+# ---------------------------------------------------------------------------
+
+
+class TestSessionClosedRuntimeErrorContained:
+    """A closed-aiohttp-session RuntimeError degrades to the debug log."""
+
+    def test_runtime_error_does_not_escape_write_session_position(self) -> None:
+        from custom_components.jellyfin_assist.advancement import (
+            _async_write_session_position,
+        )
+
+        runtime = _make_runtime()
+        runtime.playback_sessions["media_player.test"] = {
+            "item_id": "item-1",
+            "accumulated_playing_seconds": 120.0,
+        }
+        runtime.client.async_post_playing_items = AsyncMock(
+            side_effect=RuntimeError("Session is closed")
+        )
+
+        # Must not raise: the RuntimeError is caught and logged at debug.
+        run(_async_write_session_position(
+            runtime,
+            "media_player.test",
+            False,
+            None,
+        ))
+
+        runtime.client.async_post_playing_items.assert_awaited_once()
