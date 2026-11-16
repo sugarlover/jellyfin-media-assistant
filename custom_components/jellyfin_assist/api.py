@@ -403,6 +403,52 @@ class JellyfinApiClient:
         copied["Items"] = [dict(item) for item in items]
         return copied
 
+    async def async_get_playlist_items(
+        self,
+        user_id: str,
+        playlist_id: str,
+    ) -> dict[str, Any]:
+        """Return a playlist's members in its stored entry order, audio only.
+
+        Jellyfin's ``GET /Playlists/{playlistId}/Items`` route (v12.3) returns the
+        playlist's members in stored entry order with NO server-side re-sort. The
+        route is not bound to an ``IncludeItemTypes`` parameter (it is ignored
+        there and returns every member type), so the Audio filter is applied
+        client-side: only ``Type == "Audio"`` entries are returned. The response
+        keeps the legacy-compatible ``QueryResult`` envelope (``Items`` /
+        ``TotalRecordCount`` / ``StartIndex``), and the same validation/copy
+        semantics as :meth:`async_get_items` are preserved for the new endpoint.
+        """
+
+        normalized_user_id = user_id.strip()
+        normalized_playlist_id = playlist_id.strip()
+        if not normalized_user_id:
+            raise ValueError("Jellyfin user ID is required")
+        if not normalized_playlist_id:
+            raise ValueError("Jellyfin playlist ID is required")
+
+        result = await self._request(
+            "GET",
+            f"/Playlists/{quote(normalized_playlist_id, safe='')}/Items",
+            params={"UserId": normalized_user_id},
+        )
+        if not isinstance(result, Mapping):
+            raise JellyfinInvalidResponseError(
+                "Jellyfin playlist items response was not an object"
+            )
+        items = result.get("Items", [])
+        if not isinstance(items, list) or any(
+            not isinstance(item, Mapping) for item in items
+        ):
+            raise JellyfinInvalidResponseError(
+                "Jellyfin playlist items response did not contain a list of objects"
+            )
+        copied = dict(result)
+        copied["Items"] = [
+            dict(item) for item in items if item.get("Type") == "Audio"
+        ]
+        return copied
+
     async def async_post_playing_items(
         self,
         *,

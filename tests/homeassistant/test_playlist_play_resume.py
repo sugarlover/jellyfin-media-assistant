@@ -49,7 +49,23 @@ def run(coro: Any) -> Any:
 # Helpers / fakes
 # ---------------------------------------------------------------------------
 
-def _make_raw_track(item_id: str, name: str, index: int) -> dict[str, Any]:
+def _make_raw_track(
+    item_id: str,
+    name: str,
+    index: int,
+    *,
+    index_number: int | None = None,
+    parent_index: int = 1,
+) -> dict[str, Any]:
+    """Build a raw media-track mapping.
+
+    ``index`` is the playlist ENTRY position (1-based), while ``index_number``
+    is the ALBUM track number (``IndexNumber``). They are deliberately
+    decoupled so tests no longer assume entry order == album track order
+    (the old fixture prettied the two together, which masked the out-of-order
+    playlist bug). When ``index_number`` is not supplied it falls back to
+    ``index`` to keep the pre-existing fixtures green.
+    """
     return {
         "Id": item_id,
         "Name": name,
@@ -57,8 +73,8 @@ def _make_raw_track(item_id: str, name: str, index: int) -> dict[str, Any]:
         "Album": "Test Album",
         "AlbumArtist": "Test Artist",
         "Artists": ["Test Artist"],
-        "IndexNumber": index,
-        "ParentIndexNumber": 1,
+        "IndexNumber": index if index_number is None else index_number,
+        "ParentIndexNumber": parent_index,
         "RunTimeTicks": 200_000_000,
     }
 
@@ -458,6 +474,109 @@ class TestResumePlaylistFilterOnResume:
             ))
 
         assert runtime.queued_playlist_id == "playlist-1"
+
+
+# ---------------------------------------------------------------------------
+# D1 regression: playlist ENTRY order must be preserved, NOT album track order
+# ---------------------------------------------------------------------------
+
+
+class TestPlaylistEntryOrderRegression:
+    """Playing a playlist preserves playlist ENTRY order, not album track order.
+
+    The pre-fix bug: ``async_handle_get_playlist_tracks`` fetched members via
+    ``recursive /Items`` sorted by ``ParentIndexNumber,IndexNumber`` (album
+    track/disc numbers), so a playlist whose entry order differs from album
+    track order played out of order. The fixture here decouples IndexNumber
+    (album track number) from playlist position so the regression is real.
+    """
+
+    def test_play_preserves_entry_order_not_album_track_order(self) -> None:
+        # Entry order: t1, t2, t3, t4 with album track numbers [3, 4, 1, 2]
+        # across two albums. Album-track sort would be [t3, t4, t1, t2],
+        # which is NOT the entry order; the fix must keep [t1, t2, t3, t4].
+        tracks = [
+            _make_raw_track("t1", "Track 1", 1, index_number=3, parent_index=2),
+            _make_raw_track("t2", "Track 2", 2, index_number=4, parent_index=2),
+            _make_raw_track("t3", "Track 3", 3, index_number=1, parent_index=1),
+            _make_raw_track("t4", "Track 4", 4, index_number=2, parent_index=1),
+        ]
+        store = _FakePlaylistStore(completed=set())
+        runtime = _make_runtime(playlist_tracking_store=store)
+        hass = _make_fake_hass()
+
+        with patch(
+            "custom_components.jellyfin_assist.orchestration._action",
+            new=lambda h, r, s, d, *, c=None, **kw: _fake_action(
+                h, r, s, d, context=c, playlist_items=tracks
+            ),
+        ), patch(
+            "custom_components.jellyfin_assist.orchestration.async_prepare_play_session",
+            new=AsyncMock(return_value={"success": True}),
+        ), patch(
+            "custom_components.jellyfin_assist.orchestration.async_play_item",
+            new=AsyncMock(return_value={"success": True}),
+        ):
+            result = run(async_play_playlist(
+                hass,
+                runtime,
+                playlist_id="playlist-1",
+                media_player="media_player.test",
+            ))
+
+        assert result["success"] is True
+        assert result["status"] == "playing"
+        # The queue follows the playlist ENTRY order, not album track number.
+        plan_ids = [item["id"] for item in result["playback_plan"]]
+        assert plan_ids == ["t1", "t2", "t3", "t4"]
+        # The first track is the first ENTRY, not the lowest album track number.
+        assert result["jellyfin_id"] == "t1"
+
+    def test_resume_preserves_entry_order_not_album_track_order(self) -> None:
+        # Entry order: t1, t2, t3, t4 with album track numbers [3, 4, 1, 2]
+        # across two albums; complete only t1. The remaining tracks, in
+        # ENTRY order, are [t2, t3, t4]. In ALBUM-track order they would be
+        # [t3, t4, t2] (t3=album1#1, t4=album1#2, t2=album2#2). These differ,
+        # so this is a genuine regression guard: the first remaining track is
+        # the second ENTRY (t2), not the lowest album track number (t3).
+        tracks = [
+            _make_raw_track("t1", "Track 1", 1, index_number=3, parent_index=2),
+            _make_raw_track("t2", "Track 2", 2, index_number=4, parent_index=2),
+            _make_raw_track("t3", "Track 3", 3, index_number=1, parent_index=1),
+            _make_raw_track("t4", "Track 4", 4, index_number=2, parent_index=1),
+        ]
+        store = _FakePlaylistStore(completed={"t1"})
+        runtime = _make_runtime(playlist_tracking_store=store)
+        hass = _make_fake_hass()
+
+        with patch(
+            "custom_components.jellyfin_assist.orchestration._action",
+            new=lambda h, r, s, d, *, c=None, **kw: _fake_action(
+                h, r, s, d, context=c, playlist_items=tracks
+            ),
+        ), patch(
+            "custom_components.jellyfin_assist.orchestration.async_prepare_play_session",
+            new=AsyncMock(return_value={"success": True}),
+        ), patch(
+            "custom_components.jellyfin_assist.orchestration.async_play_item",
+            new=AsyncMock(return_value={"success": True}),
+        ):
+            result = run(async_resume_playlist(
+                hass,
+                runtime,
+                playlist_id="playlist-1",
+                media_player="media_player.test",
+            ))
+
+        assert result["success"] is True
+        assert result["status"] == "playing"
+        plan_ids = [item["id"] for item in result["playback_plan"]]
+        assert plan_ids == ["t2", "t3", "t4"]
+        # First remaining track is the second ENTRY (t2), not reordered by
+        # album track number (which would be t3).
+        assert result["jellyfin_id"] == "t2"
+        # Resume filters completed, does not reset the store.
+        assert store.reset_called_with == []
 
 
 # ---------------------------------------------------------------------------

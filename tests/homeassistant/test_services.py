@@ -428,17 +428,6 @@ def test_native_queue_transport_failure_returns_compatible_unavailable_response(
                 "sort_order": "Ascending",
             },
         ),
-        (
-            "get_playlist_tracks",
-            {"playlist_id": "playlist-1"},
-            {
-                "parent_id": "playlist-1",
-                "include_item_types": "Audio",
-                "recursive": True,
-                "sort_by": "ParentIndexNumber,IndexNumber",
-                "sort_order": "Ascending",
-            },
-        ),
     ],
 )
 def test_native_item_query_actions_preserve_rest_response_contract(
@@ -481,6 +470,135 @@ def test_native_item_query_actions_preserve_rest_response_contract(
             "TotalRecordCount": 1,
         },
     }
+
+
+def test_get_playlist_tracks_uses_entry_order_endpoint_no_sort(
+    tmp_path: Path,
+) -> None:
+    """``get_playlist_tracks`` routes to the entry-order endpoint, not /Items.
+
+    The playlist handler must call ``async_get_playlist_items`` (the
+    ``GET /Playlists/{id}/Items`` route) and must NOT send any
+    ``recursive``/``sort_by``/``sort_order``/``parent_id`` — those album-track
+    sort params are what rotated the queue out of entry order.
+    """
+
+    playlist_calls: list[tuple[str, str]] = []
+    items_calls: list[dict[str, Any]] = []
+
+    class Client:
+        async def async_get_playlist_items(
+            self, user_id: str, playlist_id: str
+        ) -> dict[str, Any]:
+            playlist_calls.append((user_id, playlist_id))
+            return {
+                "Items": [{"Id": "item-1", "Name": "Example", "Type": "Audio"}],
+                "TotalRecordCount": 1,
+            }
+
+        async def async_get_items(self, user_id: str, **kwargs: Any) -> dict[str, Any]:
+            items_calls.append(kwargs)
+            raise AssertionError("async_get_items must not be used for playlists")
+
+    entry = FakeEntry("entry-1", {})
+    entry.runtime_data = build_runtime(client=Client())
+    hass = FakeHass(tmp_path, entries=[entry])
+    run(async_register_services(hass))
+
+    registered = hass.services.registered[("jellyfin_assist", "get_playlist_tracks")]
+    response = run(
+        registered["handler"](
+            ServiceCall({"config_entry_id": "entry-1", "playlist_id": "playlist-1"})
+        )
+    )
+
+    assert registered["supports_response"] is SupportsResponse.ONLY
+    # The entry-order endpoint is the one and only client call made.
+    assert playlist_calls == [("USER-1", "playlist-1")]
+    # No fallback to the legacy /Items query (which sorts by album track number).
+    assert items_calls == []
+    assert response == {
+        "status": 200,
+        "content": {
+            "Items": [{"Id": "item-1", "Name": "Example", "Type": "Audio"}],
+            "TotalRecordCount": 1,
+        },
+    }
+
+
+def test_get_playlist_tracks_keeps_entry_order_not_album_track_order(
+    tmp_path: Path,
+) -> None:
+    """Red on the old code path, green on the new one.
+
+    Mirrors the two server endpoints:
+
+    - the OLD path (``async_get_items`` with ``sort_by=
+      ParentIndexNumber,IndexNumber``) is what Jellyfin's ``/Items`` route
+      returned for the pre-fix handler: members sorted by album track number.
+    - the NEW path (``async_get_playlist_items``) is what the
+      ``GET /Playlists/{id}/Items`` route returns: members in stored ENTRY
+      order.
+
+    A playlist whose entry order differs from album track order ([3, 4, 1, 2]
+    by album number, entry order t1..t4) must come back in ENTRY order. On the
+    old handler the client is hit via ``async_get_items`` and returns the
+    album-sorted list, so the entry-order assertion FAILS; on the new handler
+    it is hit via ``async_get_playlist_items`` and returns entry order, so it
+    PASSES.
+    """
+
+    def _track(item_id: str, index_number: int, parent_index: int) -> dict[str, Any]:
+        return {
+            "Id": item_id,
+            "Name": item_id,
+            "Type": "Audio",
+            "IndexNumber": index_number,
+            "ParentIndexNumber": parent_index,
+        }
+
+    entry_order = [
+        _track("t1", 3, 2),  # entry 1
+        _track("t2", 4, 2),  # entry 2
+        _track("t3", 1, 1),  # entry 3
+        _track("t4", 2, 1),  # entry 4
+    ]
+    # Album-track sort (what /Items + sort_by=ParentIndexNumber,IndexNumber
+    # returned pre-fix): t3(1), t4(2), t1(3), t2(4).
+    album_sorted = [
+        _track("t3", 1, 1),
+        _track("t4", 2, 1),
+        _track("t1", 3, 2),
+        _track("t2", 4, 2),
+    ]
+
+    class Client:
+        async def async_get_items(self, user_id: str, **kwargs: Any) -> dict[str, Any]:
+            # OLD path: the legacy /Items route answers in album-track order.
+            assert kwargs.get("sort_by") == "ParentIndexNumber,IndexNumber"
+            return {"Items": [dict(t) for t in album_sorted], "TotalRecordCount": 4}
+
+        async def async_get_playlist_items(
+            self, user_id: str, playlist_id: str
+        ) -> dict[str, Any]:
+            # NEW path: /Playlists/{id}/Items answers in stored entry order.
+            return {"Items": [dict(t) for t in entry_order], "TotalRecordCount": 4}
+
+    entry = FakeEntry("entry-1", {})
+    entry.runtime_data = build_runtime(client=Client())
+    hass = FakeHass(tmp_path, entries=[entry])
+    run(async_register_services(hass))
+
+    registered = hass.services.registered[("jellyfin_assist", "get_playlist_tracks")]
+    response = run(
+        registered["handler"](
+            ServiceCall({"config_entry_id": "entry-1", "playlist_id": "playlist-1"})
+        )
+    )
+
+    plan_ids = [item["Id"] for item in response["content"]["Items"]]
+    # The playlist comes back in ENTRY order, not album track order.
+    assert plan_ids == ["t1", "t2", "t3", "t4"]
 
 
 def test_native_item_query_failure_is_translated(tmp_path: Path) -> None:

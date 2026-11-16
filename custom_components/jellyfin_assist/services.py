@@ -935,17 +935,27 @@ async def async_handle_get_playlist_tracks(
     hass: HomeAssistant,
     call: ServiceCall,
 ) -> ServiceResponse:
-    """Fetch ordered audio tracks for one Jellyfin playlist."""
+    """Fetch audio tracks for one Jellyfin playlist in its stored entry order.
+
+    Uses the playlist entry-order endpoint (``GET /Playlists/{id}/Items``), which
+    returns members in playlist order with no server-side re-sort. No
+    ``recursive``/``sort_by``/``sort_order``/``parent_id`` are sent to the route,
+    and nothing is re-sorted by album track number after the fetch.
+    """
 
     runtime = _resolve_runtime(hass, call)
-    return await _async_query_items(
-        runtime,
-        parent_id=_clean_text(call.data.get(ATTR_PLAYLIST_ID)),
-        include_item_types="Audio",
-        recursive=True,
-        sort_by="ParentIndexNumber,IndexNumber",
-        sort_order="Ascending",
-    )
+    playlist_id = _clean_text(call.data.get(ATTR_PLAYLIST_ID))
+    if not playlist_id:
+        raise _validation_error(
+            "invalid_playlist_id", "Choose a Jellyfin playlist ID."
+        )
+    try:
+        content = await runtime.client.async_get_playlist_items(
+            runtime.user_id, playlist_id
+        )
+    except (JellyfinApiError, ValueError) as err:
+        raise _validation_error("library_query_failed", str(err)) from err
+    return _legacy_rest_compatible_items_response(content)
 
 
 async def _async_queue_call(
