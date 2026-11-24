@@ -79,6 +79,12 @@ _HOMOPHONE_GROUPS: tuple[tuple[str, ...], ...] = (
     # as "fire starter" -> "Fyre Starter" stays TOKEN_SIGNATURE and is not
     # confirmable by the D2 floor.
     ("youre", "your"),
+    # Fred's library contains a genuine ASR near-miss: a spoken "you're
+    # idle" transcript is misrecognized and must confirm to the catalog
+    # title "Your Idol". idle/idol share the /aɪdl/ AmE pronunciation and
+    # the same Soundex signature (I340), so this is a true homophone in the
+    # same sound-confusion class as there/their/theyre.
+    ("idol", "idle"),
 )
 
 _HOMOPHONE_CANONICAL: dict[str, str] = {

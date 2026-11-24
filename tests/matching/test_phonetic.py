@@ -34,6 +34,32 @@ def test_short_common_homophone_can_be_classified() -> None:
     assert match.method is PhoneticMatchMethod.COMMON_HOMOPHONE
 
 
+def test_idle_idol_homophone_is_classified_common_homophone() -> None:
+    # Approved library pair (D1): a spoken "you're idle" transcript must
+    # confirm to the catalog title "Your Idol". idle/idol share the /aɪdl/
+    # AmE pronunciation and the Soundex I340 signature, so the match is a
+    # true homophone, not a mere sound-alike.
+    match = classify_phonetic_match("you're idle", "Your Idol")
+
+    assert match is not None
+    assert match.method is PhoneticMatchMethod.COMMON_HOMOPHONE
+    assert match.score == 74
+    assert match.phonetic_score == 74
+    assert match.query_signature == match.candidate_signature
+
+
+def test_idle_idol_homophone_score_meets_confirmable_floor() -> None:
+    # The approved pair must land exactly on the D4 confirmable floor
+    # (COMMON_HOMOPHONE = 74), so a real single-candidate confirm is
+    # possible without any threshold/floor change.
+    match = classify_phonetic_match("you're idle", "Your Idol")
+
+    assert match is not None
+    assert match.score == score_for_phonetic_method(
+        PhoneticMatchMethod.COMMON_HOMOPHONE
+    )
+
+
 def test_soundex_style_signature_handles_different_spellings() -> None:
     match = classify_phonetic_match("Sean", "Shawn")
 
