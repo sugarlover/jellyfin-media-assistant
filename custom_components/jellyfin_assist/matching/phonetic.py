@@ -4,7 +4,9 @@ This module is the lowest-confidence title-matching tier. It is intended for
 speech-recognition variations and genuine sound-alikes that deterministic and
 controlled fuzzy matching cannot resolve. Matching is deliberately strict:
 
-* query and candidate must have the same token count;
+* query and candidate must line up positionally; a single STT contractive
+  split (one spoken token rendered as two, e.g. "your" -> "you re") is
+  tolerated, but a token-count difference greater than one is not;
 * every corresponding token must share the same phonetic signature;
 * short single-token inputs below three alphanumeric characters are rejected;
 * lexical and phonetic scores remain separate for diagnostics;
@@ -251,6 +253,19 @@ def _soundex_signature(token: str) -> str:
     return ("".join(output) + "000")[:4]
 
 
+def _signature_for_token_value(value: str) -> str:
+    """Return the signature used for one token (homophone group or Soundex).
+
+    This is the per-token signature used by the tokenizer: a documented
+    homophone group is identified by its group code, otherwise by its
+    Soundex-style signature.  The contractive-merge check recomputes this for
+    a merged token so "you re" maps to the identical signature of "your".
+    """
+
+    group = _HOMOPHONE_CANONICAL.get(value)
+    return group if group is not None else _soundex_signature(value)
+
+
 def _tokenize_profile_value(value: str) -> PhoneticProfile | None:
     raw_tokens = tuple(token for token in value.split() if token)
     if not raw_tokens:
@@ -328,6 +343,79 @@ def _method_for_profiles(
     return PhoneticMatchMethod.TOKEN_SIGNATURE
 
 
+def _contractive_merge_aligns(
+    query_profile: PhoneticProfile,
+    candidate_profile: PhoneticProfile,
+) -> tuple[PhoneticProfile, PhoneticProfile] | None:
+    """Return aligned profile pairs when a one-token contractive split lines up.
+
+    A contractive split renders one spoken token as two (e.g. "your" ->
+    "you re").  The longer profile's token count exceeds the shorter one's by
+    EXACTLY one.  It lines up only when merging one adjacent pair on the
+    longer side produces a token whose signature equals the corresponding
+    shorter token's signature and every remaining token already matches
+    positionally.  Returns the two (merged, aligned) profiles so the caller
+    can classify the merged alignment; returns None when no adjacent pair
+    merge matches, so a difference greater than one or a bare Soundex
+    collision is rejected.
+    """
+
+    if len(query_profile.tokens) > len(candidate_profile.tokens):
+        longer, shorter = query_profile, candidate_profile
+    elif len(query_profile.tokens) < len(candidate_profile.tokens):
+        longer, shorter = candidate_profile, query_profile
+    else:
+        return None
+
+    delta = len(longer.tokens) - len(shorter.tokens)
+    if delta != 1:
+        return None
+
+    for merge_index in range(len(shorter.tokens)):
+        # Try merging the adjacent pair starting at merge_index: the splice
+        # point where the two token sequences diverge.  The merged token
+        # keeps its OWN value/signature (computed from the concatenated
+        # token); every other longer token is carried over positionally.
+        merged_string = longer.tokens[merge_index].value + longer.tokens[merge_index + 1].value
+        merged_signature = _signature_for_token_value(merged_string)
+        merged_group = _HOMOPHONE_CANONICAL.get(merged_string)
+
+        merged_tokens: list[PhoneticToken] = []
+        longer_position = 0
+        for position, _short_token in enumerate(shorter.tokens):
+            if position == merge_index:
+                # This splice position corresponds to the two concatenated
+                # longer tokens (longer_position, longer_position + 1).
+                merged_tokens.append(
+                    PhoneticToken(
+                        value=merged_string,
+                        signature=merged_signature,
+                        homophone_group=merged_group,
+                    )
+                )
+                longer_position += 2
+            else:
+                merged_tokens.append(longer.tokens[longer_position])
+                longer_position += 1
+        merged_longer = PhoneticProfile(
+            source_value=longer.source_value,
+            tokens=tuple(merged_tokens),
+        )
+
+        # The splice is valid only if the merged token's signature equals
+        # the shorter side's counterpart AND every other positional token
+        # already signs identically — i.e. the merged profile's full
+        # signature equals the shorter side's signature.  A bare Soundex
+        # collision (no matching merge) fails this and is rejected.
+        if merged_longer.signature != shorter.signature:
+            continue
+
+        if query_profile is longer and candidate_profile is shorter:
+            return merged_longer, candidate_profile
+        return query_profile, merged_longer
+    return None
+
+
 def classify_phonetic_match(query: str, candidate_title: str) -> PhoneticTitleMatch | None:
     """Return a conservative phonetic match when stronger lexical tiers fail."""
 
@@ -338,32 +426,46 @@ def classify_phonetic_match(query: str, candidate_title: str) -> PhoneticTitleMa
 
     for query_profile in build_phonetic_profiles(query):
         for candidate_profile in build_phonetic_profiles(candidate_title):
-            if len(query_profile.tokens) != len(candidate_profile.tokens):
-                continue
-            if query_profile.signature != candidate_profile.signature:
-                continue
+            if len(query_profile.tokens) == len(candidate_profile.tokens):
+                if query_profile.signature != candidate_profile.signature:
+                    continue
+                aligned_query = query_profile
+                aligned_candidate = candidate_profile
+            else:
+                # One-token contractive split (D2): tolerate a difference of
+                # EXACTLY one, and only when merging an adjacent pair on the
+                # longer side yields a token whose signature equals the
+                # shorter side's counterpart and every other positional token
+                # already aligns.  A difference greater than one, or any
+                # adjacent pair whose merged signature does NOT match its
+                # counterpart, is rejected (continue), so a bare Soundex
+                # collision is not treated as a split.
+                aligned = _contractive_merge_aligns(query_profile, candidate_profile)
+                if aligned is None:
+                    continue
+                aligned_query, aligned_candidate = aligned
             if all(
                 left.value == right.value
-                for left, right in zip(query_profile.tokens, candidate_profile.tokens)
+                for left, right in zip(aligned_query.tokens, aligned_candidate.tokens)
             ):
                 continue
 
-            method = _method_for_profiles(query_profile, candidate_profile)
+            method = _method_for_profiles(aligned_query, aligned_candidate)
             phonetic_score = score_for_phonetic_method(method)
             similarity = _lexical_similarity(
-                query_profile.source_value,
-                candidate_profile.source_value,
+                aligned_query.source_value,
+                aligned_candidate.source_value,
             )
             lexical_score = round(similarity * 100)
             ordering = (
                 phonetic_score,
                 similarity,
-                -abs(len(query_profile.source_value) - len(candidate_profile.source_value)),
-                query_profile.source_value,
-                candidate_profile.source_value,
+                -abs(len(aligned_query.source_value) - len(aligned_candidate.source_value)),
+                aligned_query.source_value,
+                aligned_candidate.source_value,
                 method,
-                query_profile.signature,
-                candidate_profile.signature,
+                aligned_query.signature,
+                aligned_candidate.signature,
             )
             if best is None or ordering > best:
                 best = ordering
