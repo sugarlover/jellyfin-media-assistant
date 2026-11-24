@@ -72,6 +72,13 @@ _HOMOPHONE_GROUPS: tuple[tuple[str, ...], ...] = (
     ("week", "weak"),
     ("break", "brake"),
     ("weather", "whether"),
+    # ASR routinely renders the possessive "your" as "you're" in a
+    # transcript (the same speech-confusion class as there/their/theyre).
+    # Treating it as a true homophone keeps "you're idol" -> "Your Idol"
+    # confirmable (COMMON_HOMOPHONE) while a mere Soundex sound-alike such
+    # as "fire starter" -> "Fyre Starter" stays TOKEN_SIGNATURE and is not
+    # confirmable by the D2 floor.
+    ("youre", "your"),
 )
 
 _HOMOPHONE_CANONICAL: dict[str, str] = {

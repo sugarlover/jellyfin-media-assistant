@@ -203,6 +203,25 @@ _PHONETIC_THRESHOLDS: dict[PhoneticMatchMethod, PhoneticConfidenceThreshold] = {
     ),
 }
 
+# D2 — the phonetic presentation (confirmable) floor.  This is a separate,
+# LOWER floor than the auto-select floor of every phonetic method
+# (token_signature 78, common_homophone 82): a phonetic candidate in the band
+# ``_PHONETIC_CONFIRMABLE_FLOOR <= total < auto floor`` is presentable to the
+# user (CONFIRMATION_REQUIRED / AMBIGUOUS) and is STRUCTURALLY never
+# auto-eligible, because ``automatic_selection_allowed`` requires ``MATCHED``,
+# which this band never returns.
+#
+# Value calibrated from the T1 case set by the documented method scores:
+#   * true homophones classify as ``COMMON_HOMOPHONE`` -> 74  (confirm)
+#   * unrelated identical-Soundex sound-alikes classify as
+#     ``TOKEN_SIGNATURE`` -> 70  (do NOT confirm, e.g. "fire starter" vs
+#     "Fyre Starter")
+# A scalar floor of 70 (the plan body's initial value) would wrongly confirm
+# the false-positive Soundex-only case; 74 separates the two polarities using
+# only the existing method classification — no extra gate, no new dependency,
+# no title-specific patch.  See D2 in the plan doc.
+_PHONETIC_CONFIRMABLE_FLOOR = 74
+
 
 class SearchDecisionReason(StrEnum):
     """Stable machine-readable reasons for a unified search decision."""
@@ -216,6 +235,7 @@ class SearchDecisionReason(StrEnum):
     FUZZY_SIMILARITY_BELOW_THRESHOLD = "fuzzy_similarity_below_threshold"
     FUZZY_SINGLETON_NEEDS_CONTEXT = "fuzzy_singleton_needs_context"
     PHONETIC_SINGLETON_NEEDS_CONTEXT = "phonetic_singleton_needs_context"
+    PHONETIC_BELOW_AUTO_FLOOR = "phonetic_below_auto_floor"
     AUDIO_SPOKEN_TITLE_COLLISION = "audio_spoken_title_collision"
 
 
@@ -434,6 +454,21 @@ def _rank_family(
     return ranked, rejected
 
 
+def _is_dead_end(decision: SearchDecision) -> bool:
+    """Return whether a tier's top result is a dead end that may fall through.
+
+    A dead end is a NOT_FOUND produced by a below-floor score, a below-floor
+    fuzzy similarity, or no surviving candidates.  A context-contradiction
+    verdict is NOT a dead end: it is terminal and must never fall through to
+    manufacturing a weaker-tier candidate (D1).
+    """
+    return decision.reason in {
+        SearchDecisionReason.NO_MATCHING_CANDIDATES,
+        SearchDecisionReason.SCORE_BELOW_THRESHOLD,
+        SearchDecisionReason.FUZZY_SIMILARITY_BELOW_THRESHOLD,
+    }
+
+
 def rank_search_candidates(
     query: str,
     candidates: Iterable[MediaCandidate],
@@ -561,11 +596,9 @@ def rank_search_candidates(
         )
 
     fuzzy_candidates: list[tuple[int, MediaCandidate, UnifiedTitleMatch]] = []
-    phonetic_eligible: list[tuple[int, MediaCandidate]] = []
     for catalog_index, candidate in fuzzy_after_article_omission:
         fuzzy = classify_fuzzy_match(query, candidate.title)
         if fuzzy is None:
-            phonetic_eligible.append((catalog_index, candidate))
             continue
         fuzzy_candidates.append(
             (
@@ -588,7 +621,7 @@ def rank_search_candidates(
         active_context,
     )
     if fuzzy_ranked:
-        return SearchRanking(
+        fuzzy_ranking = SearchRanking(
             query=query,
             context=active_context,
             active_family=LexicalMatchFamily.FUZZY,
@@ -600,9 +633,28 @@ def rank_search_candidates(
                 + fuzzy_rejected
             ),
         )
+        # D1: the fuzzy tier HOLDS the decision when its ranking already
+        # reaches a SAFE, never-auto-selecting terminal outcome — MATCHED,
+        # AMBIGUOUS (meaningful alternatives exist), CONFIRMATION_REQUIRED,
+        # or a context-contradiction verdict.  It FALLS THROUGH to the
+        # phonetic tier ONLY when its top result is a genuine dead end: a
+        # NOT_FOUND (below-floor score/similarity, no candidates).  Fall-
+        # through is driven solely by the TOP being a dead end, not by
+        # candidate count; sub-floor candidates are not "presentable," so a
+        # below-floor-top multi-candidate fuzzy tier is a dead end that MUST
+        # fall through.  A context-contradicted top is terminal and never
+        # falls through.
+        if not _is_dead_end(decide_search_ranking(fuzzy_ranking)):
+            return fuzzy_ranking
 
+    # F2/D3: the phonetic tier is built from the FULL fuzzy-eligible pool —
+    # every candidate that did not reach a deterministic tier, including
+    # those whose fuzzy match is sub-threshold. A sub-threshold fuzzy
+    # candidate is phonetic-eligible (the D3 fix); before this change it was
+    # returned by the fuzzy tier at the dead-end return above and never
+    # reached the phonetic tier.
     phonetic_candidates: list[tuple[int, MediaCandidate, UnifiedTitleMatch]] = []
-    for catalog_index, candidate in phonetic_eligible:
+    for catalog_index, candidate in fuzzy_after_article_omission:
         phonetic = classify_phonetic_match(query, candidate.title)
         if phonetic is None:
             continue
@@ -788,6 +840,43 @@ def decide_search_ranking(ranking: SearchRanking) -> SearchDecision:
             ranking,
             status=status,
             reason=SearchDecisionReason.TOP_CONTEXT_CONTRADICTION,
+            selected=None,
+            alternatives=ranking.matches,
+            minimum_score=minimum_score,
+            minimum_margin=minimum_margin,
+            minimum_similarity=minimum_similarity,
+            observed_margin=observed_margin,
+        )
+
+    if (
+        top.title_match.is_phonetic
+        and _PHONETIC_CONFIRMABLE_FLOOR <= top.total_score < minimum_score
+    ):
+        # D2: a below-auto-floor phonetic candidate is presentable to the
+        # user when it clears the confirmable floor and is not
+        # context-contradicted.  Its decision path yields ONLY
+        # CONFIRMATION_REQUIRED (singleton) or AMBIGUOUS (alternatives),
+        # never MATCHED, so ``automatic_selection_allowed`` is structurally
+        # False for this band.  The safety invariant is scalar: the
+        # confirmable floor (74) is strictly below every phonetic auto-select
+        # floor (token_signature 78, common_homophone 82), so nothing in this
+        # band can be auto-selected.
+        if len(ranking.matches) == 1:
+            return _decision(
+                ranking,
+                status=MatchDecisionStatus.CONFIRMATION_REQUIRED,
+                reason=SearchDecisionReason.PHONETIC_BELOW_AUTO_FLOOR,
+                selected=None,
+                alternatives=ranking.matches,
+                minimum_score=minimum_score,
+                minimum_margin=minimum_margin,
+                minimum_similarity=minimum_similarity,
+                observed_margin=None,
+            )
+        return _decision(
+            ranking,
+            status=MatchDecisionStatus.AMBIGUOUS,
+            reason=SearchDecisionReason.PHONETIC_BELOW_AUTO_FLOOR,
             selected=None,
             alternatives=ranking.matches,
             minimum_score=minimum_score,

@@ -81,6 +81,10 @@ def test_media_type_rejection_does_not_block_fuzzy_fallback() -> None:
 
 
 def test_context_ranks_equal_fuzzy_titles_without_changing_lexical_score() -> None:
+    # D1: the fuzzy tier for "Alonee" -> "Alone" is a dead end (similarity
+    # below the SINGLE_EDIT floor of 0.84), so it falls through to the
+    # phonetic tier.  Context still ranks the equal phonetic titles; the
+    # lexical scores are unchanged and the context score disambiguates.
     ranking = rank_search_candidates(
         "Alonee",
         [
@@ -95,7 +99,7 @@ def test_context_ranks_equal_fuzzy_titles_without_changing_lexical_score() -> No
         MediaSearchContext(media_type="Audio", artist="Metallica"),
     )
 
-    assert ranking.active_family is LexicalMatchFamily.FUZZY
+    assert ranking.active_family is LexicalMatchFamily.PHONETIC
     assert [item.candidate.key for item in ranking.matches] == ["metallica", "u2"]
     assert ranking.matches[0].title_match.lexical_score == ranking.matches[1].title_match.lexical_score
     assert ranking.matches[0].context_score > ranking.matches[1].context_score
@@ -252,7 +256,11 @@ def test_unified_classifier_falls_through_to_phonetic() -> None:
     assert match.fuzzy is None
 
 
-def test_fuzzy_tier_blocks_phonetic_competition() -> None:
+def test_dead_end_fuzzy_tier_falls_through_to_phonetic() -> None:
+    # F1/D3: a singleton fuzzy tier whose top is a below-floor dead end must
+    # not shadow the phonetic tier.  The phonetic tier is built from the full
+    # fuzzy-eligible pool, so the sub-threshold fuzzy candidate ("Right
+    # Hear") joins it too; the true homophone ("Write Here") still ranks top.
     ranking = rank_search_candidates(
         "Right Here",
         [
@@ -261,19 +269,68 @@ def test_fuzzy_tier_blocks_phonetic_competition() -> None:
         ],
     )
 
-    assert ranking.active_family is LexicalMatchFamily.FUZZY
-    assert [item.candidate.key for item in ranking.matches] == ["fuzzy"]
+    assert ranking.active_family is LexicalMatchFamily.PHONETIC
+    assert all(item.title_match.is_fuzzy is False for item in ranking.matches)
+    # The true homophone ranks first; the sub-threshold fuzzy candidate is
+    # now phonetic-eligible and present (no longer shadowed).
+    assert ranking.matches[0].candidate.key == "phonetic"
+    assert [item.candidate.key for item in ranking.matches] == [
+        "phonetic",
+        "fuzzy",
+    ]
+
+
+def test_below_floor_multi_fuzzy_tier_falls_through_to_phonetic() -> None:
+    # D1: fall-through is driven solely by the TOP being a dead end, not by
+    # candidate count.  A below-floor-top multi-candidate fuzzy tier is a
+    # dead end that MUST fall through to the phonetic tier, even when there
+    # are multiple below-floor candidates.  The confirmable homophone is NOT
+    # shadowed by sub-floor typos.
+    #
+    # Shape (empirically verified): "Right Here" ->
+    #   Rught Heer  FUZZ LIMITED_MULTI_EDIT 76  (< 83 floor)
+    #   Rigt Herr   FUZZ LIMITED_MULTI_EDIT 76  (< 83 floor)
+    #   Write Here  PHON COMMON_HOMOPHONE 74   (confirmable, >= 74 floor)
+    # Both typos are genuine below-floor NOT_FOUND; top = 76 < 83.
+    decision = _decide(
+        "Right Here",
+        [
+            MediaCandidate(key="typo-a", title="Rught Heer"),
+            MediaCandidate(key="typo-b", title="Rigt Herr"),
+            MediaCandidate(key="phonetic", title="Write Here"),
+        ],
+    )
+
+    assert decision.status is MatchDecisionStatus.CONFIRMATION_REQUIRED
+    assert decision.active_family is LexicalMatchFamily.PHONETIC
+    assert decision.selected is None
+    assert decision.automatic_selection_allowed is False
+    assert decision.confirmation_required is True
+    # The confirmable homophone is presentable, not shadowed.
+    keys = [item.candidate.key for item in decision.alternatives]
+    assert "phonetic" in keys
+    # The sub-floor typos are NOT presentable (they are below the confirmable
+    # floor); the homophone is the only confirmable alternative.
+    assert "typo-a" not in keys
+    assert "typo-b" not in keys
 
 
 def test_phonetic_singleton_without_context_is_not_auto_selected() -> None:
+    # D2: a below-auto-floor phonetic homophone is now presentable
+    # (CONFIRMATION_REQUIRED) rather than a dead end, and is structurally
+    # never auto-eligible.
     decision = _decide(
         "Right Here",
         [MediaCandidate(key="song", title="Write Here")],
     )
 
-    assert decision.status is MatchDecisionStatus.NOT_FOUND
-    assert decision.reason is SearchDecisionReason.SCORE_BELOW_THRESHOLD
+    assert decision.status is MatchDecisionStatus.CONFIRMATION_REQUIRED
+    assert decision.reason is SearchDecisionReason.PHONETIC_BELOW_AUTO_FLOOR
     assert decision.active_family is LexicalMatchFamily.PHONETIC
+    assert decision.selected is None
+    assert decision.automatic_selection_allowed is False
+    assert decision.confirmation_required is True
+    assert [item.candidate.key for item in decision.alternatives] == ["song"]
 
 
 def test_phonetic_singleton_with_only_media_type_still_needs_context() -> None:
@@ -288,6 +345,60 @@ def test_phonetic_singleton_with_only_media_type_still_needs_context() -> None:
     assert decision.confirmation_required is True
     assert decision.selected is None
     assert [item.candidate.key for item in decision.alternatives] == ["song"]
+
+
+def test_unrelated_soundex_signature_is_not_confirmable() -> None:
+    # D2 negative guard (review item 3): an unrelated title that shares only
+    # a Soundex sound-alike (NOT a true homophone, NOT reachable by a
+    # stronger tier) reaches the phonetic tier at the token-signature score
+    # (70) and is NOT confirmable — it resolves to NOT_FOUND, never
+    # CONFIRMATION_REQUIRED or AMBIGUOUS, and is never auto-eligible.
+    decision = _decide(
+        "Right Here",
+        [MediaCandidate(key="decoy", title="Right Hear")],
+    )
+
+    assert decision.status is MatchDecisionStatus.NOT_FOUND
+    assert decision.active_family is LexicalMatchFamily.PHONETIC
+    assert decision.selected is None
+    assert decision.automatic_selection_allowed is False
+    # A confirmation prompt would be wrong here; there is no confirmable
+    # alternative to present.
+    assert decision.confirmation_required is False
+    assert decision.selection_required is False
+
+
+def test_phonetic_auto_select_thresholds_unchanged() -> None:
+    # D2 structural invariant (review item 4): the automatic-selection floors
+    # were NOT lowered by the confirmable-floor change.  The confirmable band
+    # (74) must stay strictly below every phonetic auto-select floor, so a
+    # below-auto-floor phonetic candidate can never be auto-selected.
+    from custom_components.jellyfin_assist.matching.phonetic import (
+        PhoneticMatchMethod,
+        score_for_phonetic_method,
+    )
+    from custom_components.jellyfin_assist.matching.pipeline import (
+        _PHONETIC_CONFIRMABLE_FLOOR,
+        threshold_for_phonetic_method,
+    )
+
+    common_floor = threshold_for_phonetic_method(
+        PhoneticMatchMethod.COMMON_HOMOPHONE
+    ).minimum_total_score
+    token_floor = threshold_for_phonetic_method(
+        PhoneticMatchMethod.TOKEN_SIGNATURE
+    ).minimum_total_score
+
+    # Auto-select floors are exactly the original values (unchanged).
+    assert common_floor == 82
+    assert token_floor == 78
+    # The confirmable floor is strictly below both auto-select floors, and
+    # below the strongest phonetic base score, so the confirmable band can
+    # never reach MATCHED.
+    assert _PHONETIC_CONFIRMABLE_FLOOR < min(common_floor, token_floor)
+    assert _PHONETIC_CONFIRMABLE_FLOOR <= score_for_phonetic_method(
+        PhoneticMatchMethod.COMMON_HOMOPHONE
+    )
 
 
 def test_halie_stt_spelling_requires_confirmation_with_only_media_type() -> None:
