@@ -8,9 +8,10 @@ engine.
 
 The index never downloads media or images and never mutates Jellyfin.  It stores
 only the item payload supplied by a future read-only catalog loader plus
-precomputed title variants, tokens, and character n-grams used for candidate
-shortlisting.  Shortlisting cannot create a match; deterministic, fuzzy, and
-phonetic ranking still make the final decision.
+precomputed title variants, tokens, character n-grams, and per-token phonetic
+signatures used for candidate shortlisting.  Shortlisting cannot create a
+match; deterministic, fuzzy, and phonetic ranking still make the final
+decision.
 """
 
 from __future__ import annotations
@@ -25,6 +26,11 @@ from typing import Any
 
 from ..matching.context import MediaCandidate, MediaSearchContext
 from ..matching.normalization import TextProfile, build_text_profile
+from ..matching.phonetic import (
+    build_phonetic_profiles,
+    classify_phonetic_match,
+    _signature_for_token_value,
+)
 from ..matching.pipeline import (
     SearchDecision,
     SearchRanking,
@@ -58,6 +64,7 @@ class CatalogShortlistMethod(StrEnum):
     TOKEN_ANCHOR = "token_anchor"
     CHARACTER_NGRAM = "character_ngram"
     SMALL_TYPE_SCAN = "small_type_scan"
+    PHONETIC_SCORE = "phonetic_score"
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +92,7 @@ class CatalogIndexRecord:
     alias_profiles: tuple[TextProfile, ...]
     tokens: frozenset[str]
     ngrams: frozenset[str]
+    phonetic_signatures: frozenset[str]
 
     @property
     def is_logical_group(self) -> bool:
@@ -102,6 +110,7 @@ class CatalogShortlistEntry:
     token_overlap: int
     ngram_overlap: int
     ngram_similarity: float
+    phonetic_score: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +143,7 @@ class _ShortlistEvidence:
     token_overlap: int = 0
     ngram_overlap: int = 0
     ngram_similarity: float = 0.0
+    phonetic_score: int = 0
 
 
 def _canonical_text(value: str) -> str:
@@ -191,6 +201,30 @@ def _query_anchor_tokens(query: str) -> frozenset[str]:
         for token in _tokens(query)
         if len(token) >= 3 and token not in _LEADING_ARTICLES
     )
+
+
+def _query_phonetic_signature_sets(query: str) -> tuple[frozenset[str], ...]:
+    """Return the query's conservative phonetic signature variants.
+
+    For each profile the raw token-signature set plus every one-token
+    contractive-merge variant (D3's bounded re-verify prefilter).  The
+    contractive merge recomputes the merged token's signature with the
+    verbatim ``_signature_for_token_value`` so "you re" maps to the identical
+    signature of "your".
+    """
+
+    sets: list[frozenset[str]] = []
+    for profile in build_phonetic_profiles(query):
+        sets.append(frozenset(profile.signature))
+        for index in range(len(profile.tokens) - 1):
+            merged = (
+                profile.tokens[index].value + profile.tokens[index + 1].value
+            )
+            variant = list(profile.signature)
+            variant[index] = _signature_for_token_value(merged)
+            del variant[index + 1]
+            sets.append(frozenset(variant))
+    return tuple(sets)
 
 
 class CatalogIndex:
@@ -377,6 +411,13 @@ class CatalogIndex:
                         for alias in candidate.title_aliases
                     ),
                 ),
+                phonetic_signatures=frozenset().union(
+                    *(
+                        profile.signature
+                        for source in (candidate.title, *candidate.title_aliases)
+                        for profile in build_phonetic_profiles(source)
+                    ),
+                ),
             )
             records.append(record)
             if logical_group_key is not None:
@@ -410,9 +451,12 @@ class CatalogIndex:
         """Shortlist local records, then run the existing safe ranking pipeline.
 
         Exact deterministic variant hits are exhaustive for that tier and are
-        preferred.  Otherwise exact anchor tokens and character n-grams nominate
-        a bounded fuzzy/phonetic pool.  Very small eligible catalogs may be
-        scanned in full when no index signal exists.
+        preferred.  Otherwise exact anchor tokens, character n-grams, and a
+        conservative phonetic prefilter (precomputed per-record signatures
+        plus bounded re-verification) nominate a bounded fuzzy/phonetic pool.
+        Phonetic nomination is additive only: the production shortlist cap is
+        never displaced by a weaker-evidence record.  Very small eligible
+        catalogs may be scanned in full when no index signal exists.
         """
 
         if not isinstance(query, str):
@@ -485,22 +529,123 @@ class CatalogIndex:
                         methods={CatalogShortlistMethod.SMALL_TYPE_SCAN}
                     )
 
-        def sort_key(item_id: str) -> tuple[float, ...]:
-            item_evidence = evidence[item_id]
-            deterministic = (
-                CatalogShortlistMethod.DETERMINISTIC_VARIANT
-                in item_evidence.methods
-            )
+        # D3/D4 (amended 2026-11-25) / D6 (amended): tier-aware phonetic
+        # nomination and overflow precedence.  Precomputed per-record
+        # signature frozensets make the search-time prefilter a cheap subset
+        # test; only records that intersect a query signature variant are
+        # re-verified with the verbatim ``classify_phonetic_match``.
+        # Nomination only — the tiered ranking and decision steps that follow
+        # remain the sole authority (D2).
+        #
+        # A record's tier is its STRONGEST present method (D5 union
+        # semantics), with one amendment (amended D4 tier-2): a phonetic
+        # COMMON_HOMOPHONE (74) whole-title match whose query shares NO
+        # anchor token with the title (``token_overlap == 0``) ranks ABOVE
+        # token-anchor and character-ngram.  Rationale: a complete
+        # whole-title homophone with no shared token is the strongest
+        # available evidence for that query; without this tier the correct
+        # item is truncated out of the cap.  A 70 TOKEN_SIGNATURE
+        # sound-alike NEVER rises (additive only, tier-5).
+        #
+        # Interpretation note (flagged for review): amended D4's "no lexical
+        # overlap" is applied to the TOKEN-anchor signal specifically —
+        # character-ngram overlap does NOT disqualify tier-2.  On the pinned
+        # real catalog "Your Idol" for "You're idle"/"you re idle" carries
+        # token_overlap=0 AND ngram_overlap=6; the tier-2 pool is therefore
+        # "1 per D7 query" only under the token-anchor reading, which is the
+        # reading under which D7 is satisfiable (a literal "no ngram" reading
+        # would leave "Your Idol" at the ngram tier, out of the cap, and D7
+        # would fail).
+        query_signature_sets = _query_phonetic_signature_sets(query)
+        for item_id in eligible:
             record = self._records_by_id[item_id]
+            if not any(
+                variant <= record.phonetic_signatures
+                for variant in query_signature_sets
+            ):
+                continue
+            match = classify_phonetic_match(query, record.candidate.title)
+            if match is None:
+                continue
+            item_evidence = evidence.setdefault(
+                item_id, _ShortlistEvidence(methods=set())
+            )
+            item_evidence.methods.add(CatalogShortlistMethod.PHONETIC_SCORE)
+            if match.phonetic_score > item_evidence.phonetic_score:
+                item_evidence.phonetic_score = match.phonetic_score
+
+        # Amended D6: the tier-2 pool (zero-token-overlap 74 whole-title
+        # homophone) contributes at most ``TIER2_MAX`` candidates.  Small,
+        # general, not title-specific; the real catalog has 1 per D7 query,
+        # so this is bounded headroom, not a workaround.
+        tier2_max = 8
+
+        def method_tier(item_id: str) -> int:
+            item_evidence = evidence[item_id]
+            methods = item_evidence.methods
+            if CatalogShortlistMethod.DETERMINISTIC_VARIANT in methods:
+                return 1
+            if (
+                CatalogShortlistMethod.PHONETIC_SCORE in methods
+                and item_evidence.phonetic_score == 74
+                and item_evidence.token_overlap == 0
+            ):
+                return 2
+            if CatalogShortlistMethod.TOKEN_ANCHOR in methods:
+                return 3
+            if CatalogShortlistMethod.CHARACTER_NGRAM in methods:
+                return 4
+            return 5
+
+        def sort_key(item_id: str) -> tuple[object, ...]:
+            # Amended D4/D6 overflow precedence, tier-aware:
+            #   tier-2 (zero-token-overlap 74 homophone):  (74 before 70, then
+            #       token overlap, ngram similarity, ngram overlap, position) —
+            #       this pool has no token overlap, so its first key is the
+            #       phonetic score (74 before 70), per amended D6.
+            #   tiers 3-5 (token-anchor / ngram / 70 additive):  (token overlap,
+            #       ngram similarity, ngram overlap, then phonetic score, then
+            #       position) — lexical evidence dominates the phonetic-only
+            #       signal within a tier (D5), a 70 sound-alike never rises.
+            # Fully deterministic; no randomness.
+            item_evidence = evidence[item_id]
+            record = self._records_by_id[item_id]
+            if method_tier(item_id) == 2:
+                return (
+                    2,
+                    -item_evidence.phonetic_score,
+                    -item_evidence.token_overlap,
+                    -item_evidence.ngram_similarity,
+                    -item_evidence.ngram_overlap,
+                    record.position,
+                )
             return (
-                -int(deterministic),
+                method_tier(item_id),
                 -item_evidence.token_overlap,
                 -item_evidence.ngram_similarity,
                 -item_evidence.ngram_overlap,
+                -item_evidence.phonetic_score,
                 record.position,
             )
 
-        ordered_ids = sorted(evidence, key=sort_key)[:max_shortlist]
+        # Amended D4/D6: tier-1 (deterministic) leads and is never displaced;
+        # the tier-2 pool (zero-token-overlap 74 homophone) is bounded to
+        # ``tier2_max``; tiers 3-5 (token-anchor / ngram / 70 additive) follow
+        # in D6 order.  The production cap then truncates the tail, so the cap
+        # is never widened and deterministic/token-anchor/ngram pools are only
+        # ever displaced by at most ``tier2_max`` zero-token-overlap 74
+        # homophones.
+        tier_buckets: dict[int, list[str]] = {1: [], 2: [], 3: [], 4: [], 5: []}
+        for item_id in evidence:
+            tier_buckets[method_tier(item_id)].append(item_id)
+
+        ordered_ids: list[str] = sorted(
+            tier_buckets[1], key=sort_key
+        )  # tier-1 (deterministic) always leads
+        ordered_ids += sorted(tier_buckets[2], key=sort_key)[:tier2_max]
+        for tier in (3, 4, 5):
+            ordered_ids += sorted(tier_buckets[tier], key=sort_key)
+        ordered_ids = ordered_ids[:max_shortlist]
         shortlist = tuple(
             CatalogShortlistEntry(
                 record=self._records_by_id[item_id],
@@ -508,6 +653,7 @@ class CatalogIndex:
                 token_overlap=evidence[item_id].token_overlap,
                 ngram_overlap=evidence[item_id].ngram_overlap,
                 ngram_similarity=evidence[item_id].ngram_similarity,
+                phonetic_score=evidence[item_id].phonetic_score,
             )
             for item_id in ordered_ids
         )
