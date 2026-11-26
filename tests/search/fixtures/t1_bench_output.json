@@ -1,0 +1,121 @@
+{
+  "queries": [
+    "your idle",
+    "you're idle",
+    "you're idol",
+    "you re idle",
+    "your idol"
+  ],
+  "records": 8464,
+  "baseline_build_seconds": 1.2247,
+  "audio_records": 6428,
+  "signature_build": {
+    "seconds": 0.6579,
+    "memory_delta_bytes": 3548188,
+    "total_signature_entries": 26161,
+    "records_with_empty_signature": 17
+  },
+  "per_query": {
+    "your idle": {
+      "eligible_audio_pool": 6428,
+      "deterministic_pool": 0,
+      "token_anchor_pool": 96,
+      "ngram_pool": 130,
+      "phonetic_eligible": 1,
+      "phonetic_by_score": {
+        "74": 1
+      },
+      "unioned_dedup_total": 177,
+      "allocated_first_200": 177,
+      "phonetic_overflow_over_200": false,
+      "full_classify_seconds": 1.46842,
+      "intersect_candidates": 1,
+      "reverified": 1,
+      "reverify_seconds": 0.0138,
+      "top_phonetic": [
+        "pos=3913 'Your Idol' score=74"
+      ],
+      "your_idol_present_in_phonetic": true
+    },
+    "you're idle": {
+      "eligible_audio_pool": 6428,
+      "deterministic_pool": 0,
+      "token_anchor_pool": 351,
+      "ngram_pool": 153,
+      "phonetic_eligible": 1,
+      "phonetic_by_score": {
+        "74": 1
+      },
+      "unioned_dedup_total": 434,
+      "allocated_first_200": 200,
+      "phonetic_overflow_over_200": false,
+      "full_classify_seconds": 2.41588,
+      "intersect_candidates": 1,
+      "reverified": 1,
+      "reverify_seconds": 0.01449,
+      "top_phonetic": [
+        "pos=3913 'Your Idol' score=74"
+      ],
+      "your_idol_present_in_phonetic": true
+    },
+    "you're idol": {
+      "eligible_audio_pool": 6428,
+      "deterministic_pool": 0,
+      "token_anchor_pool": 352,
+      "ngram_pool": 169,
+      "phonetic_eligible": 1,
+      "phonetic_by_score": {
+        "74": 1
+      },
+      "unioned_dedup_total": 440,
+      "allocated_first_200": 200,
+      "phonetic_overflow_over_200": false,
+      "full_classify_seconds": 2.41585,
+      "intersect_candidates": 1,
+      "reverified": 1,
+      "reverify_seconds": 0.01451,
+      "top_phonetic": [
+        "pos=3913 'Your Idol' score=74"
+      ],
+      "your_idol_present_in_phonetic": true
+    },
+    "you re idle": {
+      "eligible_audio_pool": 6428,
+      "deterministic_pool": 0,
+      "token_anchor_pool": 351,
+      "ngram_pool": 153,
+      "phonetic_eligible": 1,
+      "phonetic_by_score": {
+        "74": 1
+      },
+      "unioned_dedup_total": 434,
+      "allocated_first_200": 200,
+      "phonetic_overflow_over_200": false,
+      "full_classify_seconds": 1.60762,
+      "intersect_candidates": 1,
+      "reverified": 1,
+      "reverify_seconds": 0.0139,
+      "top_phonetic": [
+        "pos=3913 'Your Idol' score=74"
+      ],
+      "your_idol_present_in_phonetic": true
+    },
+    "your idol": {
+      "eligible_audio_pool": 6428,
+      "deterministic_pool": 1,
+      "token_anchor_pool": 95,
+      "ngram_pool": 142,
+      "phonetic_eligible": 0,
+      "phonetic_by_score": {},
+      "unioned_dedup_total": 188,
+      "allocated_first_200": 188,
+      "phonetic_overflow_over_200": false,
+      "full_classify_seconds": 1.47865,
+      "intersect_candidates": 1,
+      "reverified": 0,
+      "reverify_seconds": 0.0136,
+      "top_phonetic": [],
+      "your_idol_present_in_phonetic": false
+    }
+  }
+}

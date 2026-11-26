@@ -1,0 +1,28 @@
+[
+  {
+    "dataset": "real",
+    "items": 8464,
+    "build_time_ms": 611.2,
+    "peak_memory_mb": 58.49,
+    "per_query_latency_ms": {
+      "Your Idol": 1.394,
+      "your idle": 33.924,
+      "You're idol": 61.522,
+      "You're idle": 61.935,
+      "you re idle": 43.013
+    }
+  },
+  {
+    "dataset": "synthetic",
+    "items": 10000,
+    "build_time_ms": 858.4,
+    "peak_memory_mb": 74.4,
+    "per_query_latency_ms": {
+      "Your Idol": 16.836,
+      "your idle": 9.798,
+      "You're idol": 71.407,
+      "You're idle": 72.466,
+      "you re idle": 45.01
+    }
+  }
+]

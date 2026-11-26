@@ -554,14 +554,8 @@ def test_rebuild_of_same_items_is_deterministic_every_field() -> None:
 # memory ceiling, and the real-catalog build time must remain comparable to
 # the pre-phonetic baseline (D3/D11: signatures are an additive in-memory
 # field, not a new on-disk structure).
-T1_BENCH_ARTIFACT = Path(
-    "/opt/data/kanban/boards/jma-phonetic-shortlisting/workspaces/"
-    "t_48fc6137/t1_bench_output.json"
-)
-T2_BENCH_ARTIFACT = Path(
-    "/opt/data/kanban/boards/jma-phonetic-shortlisting/workspaces/"
-    "t_4107a60a/t2_bench_output.json"
-)
+T1_BENCH_ARTIFACT = Path(__file__).parent / "fixtures" / "t1_bench_output.json"
+T2_BENCH_ARTIFACT = Path(__file__).parent / "fixtures" / "t2_bench_output.json"
 
 
 def _bench_entries() -> tuple[dict, list[dict]]:
@@ -607,10 +601,7 @@ def test_t2_benchmark_report_markdown_is_present_and_complete() -> None:
     # D8: the human-readable markdown report must contain the build time,
     # peak memory, and one latency row per D7 query for both datasets.
     report = (
-        Path(
-            "/opt/data/kanban/boards/jma-phonetic-shortlisting/workspaces/"
-            "t_4107a60a/t2_bench_report.md"
-        )
+        (Path(__file__).parent / "fixtures" / "t2_bench_report.md")
         .read_text()
     )
     assert "## real" in report
